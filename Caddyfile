@@ -1,0 +1,4 @@
+{$DOMAIN} {
+    # Access logging is intentionally disabled; do not add credential-bearing URLs.
+    reverse_proxy app:3000
+}

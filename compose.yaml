@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: rendezvous
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a random database password}
+      POSTGRES_DB: rendezvous
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U rendezvous]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://rendezvous:${POSTGRES_PASSWORD}@db:5432/rendezvous
+      PUBLIC_URL: https://${DOMAIN:?Set your public domain}
+      TRUST_PROXY: uniquelocal
+    volumes:
+      - secrets:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+  proxy:
+    image: caddy:2
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+    restart: unless-stopped
+volumes:
+  postgres:
+  secrets:
+  caddy_data:
+  caddy_config:
