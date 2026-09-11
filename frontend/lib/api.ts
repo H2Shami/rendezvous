@@ -19,7 +19,7 @@ export async function api<T>(owner: Owner | null, path = '', method = 'GET', bod
   const id = response.headers.get('X-Request-ID') || requestId;
   const details = `${method} ${endpoint.split('?')[0]} → HTTP ${response.status}; request ${id}`;
   if (!response.headers.get('Content-Type')?.toLowerCase().includes('application/json')) {
-    throw new ApiError(response.status, `API routing error: expected JSON, received a non-JSON response (${details}). Open the routing-proxy/ngrok URL, not the Next.js port. Check that /api/* routes to Express.`, 5);
+    throw new ApiError(response.status, `API proxy error: expected JSON, received a non-JSON response (${details}). Check the Next.js and Express server logs.`, 5);
   }
   let value;
   try { value = await response.json(); }

@@ -16,7 +16,8 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql://rendezvous:${POSTGRES_PASSWORD}@db:5432/rendezvous
-      PUBLIC_URL: https://${DOMAIN:?Set your public domain}
+      PUBLIC_URL: https://${FRONTEND_DOMAIN:?Set your frontend domain}
+      FRONTEND_URL: https://${FRONTEND_DOMAIN}
       TRUST_PROXY: uniquelocal
     volumes:
       - secrets:/data
@@ -26,22 +27,11 @@ services:
     restart: unless-stopped
   frontend:
     build: ./frontend
-    restart: unless-stopped
-  proxy:
-    image: caddy:2
     environment:
-      DOMAIN: ${DOMAIN}
+      EXPRESS_URL: http://app:3000
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on: [app, frontend]
+      - "3000:3000"
     restart: unless-stopped
 volumes:
   postgres:
   secrets:
-  caddy_data:
-  caddy_config:

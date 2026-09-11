@@ -4,14 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { formatLine } from './dev-output.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const port = Number(process.env.PORT || 3000), proxyPort = Number(process.env.PROXY_PORT || 8080);
+const port = Number(process.env.PORT || 4372);
 if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Use Node 22+ to run the backend.');
-if (![port, proxyPort].every(p => Number.isInteger(p) && p > 0 && p < 65536) || port === proxyPort) throw new Error('PORT and PROXY_PORT must be distinct valid ports.');
-const publicUrl = process.env.PUBLIC_URL || `http://127.0.0.1:${proxyPort}`;
+if (!Number.isInteger(port) || port < 1 || port >= 65536) throw new Error('PORT must be a valid port.');
+const publicUrl = process.env.PUBLIC_URL || 'http://127.0.0.1:3000';
 const host = process.env.HOST || '127.0.0.1';
 const apiTarget = `http://${host === '0.0.0.0' ? '127.0.0.1' : host === '::' ? '[::1]' : host}:${port}`;
-const frontendTarget = process.env.FRONTEND_TARGET || 'http://127.0.0.1:3001';
-const env = { ...process.env, HOST: host, PORT: String(port), PROXY_PORT: String(proxyPort), PUBLIC_URL: publicUrl, API_TARGET: apiTarget, FRONTEND_TARGET: frontendTarget };
+const env = { ...process.env, HOST: host, PORT: String(port), PUBLIC_URL: publicUrl, FRONTEND_URL: process.env.FRONTEND_URL || publicUrl, EXPRESS_URL: apiTarget };
 const children: ChildProcess[] = [];
 let stopping = false;
 function signal(child: ChildProcess, value: NodeJS.Signals) {
@@ -24,7 +23,7 @@ function signal(child: ChildProcess, value: NodeJS.Signals) {
 }
 function stop(code: number) {
   if (stopping) return; stopping = true; process.exitCode = code;
-  console.log('[backend] Stopping server and proxy…');
+  console.log('[backend] Stopping server…');
   for (const child of children) signal(child, 'SIGTERM');
   const timeout = setTimeout(() => { for (const child of children) signal(child, 'SIGKILL'); }, 8000);
   timeout.unref();
@@ -43,8 +42,7 @@ function launch(name: string, entry: string) {
   });
 }
 console.log(`[backend] Open ${publicUrl}`);
-console.log(`[proxy] :${proxyPort} → server :${port}; frontend ${frontendTarget}`);
-console.log('[backend] Start the client separately: npm run dev:web. Ctrl-C stops only server + proxy.');
+console.log(`[server] API at ${publicUrl}; frontend ${env.FRONTEND_URL}`);
+console.log('[backend] Start the client separately: npm run dev:web. Ctrl-C stops the server.');
 process.once('SIGINT', () => stop(0)); process.once('SIGTERM', () => stop(0));
 launch('server', 'src/main.ts');
-launch('proxy', 'scripts/dev-proxy.ts');

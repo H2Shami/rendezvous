@@ -31,7 +31,7 @@ async function main() {
       retentionSeconds: numeric('RETENTION_SECONDS', 86400),
       messagesPerMinute: numeric('MESSAGES_PER_MINUTE', 60), messageBudget: numeric('MESSAGE_BUDGET', 10000),
     });
-    app = createApplication(service, { publicUrl, trustProxy: process.env.TRUST_PROXY || false });
+    app = createApplication(service, { publicUrl, frontendOrigin: process.env.FRONTEND_URL, trustProxy: process.env.TRUST_PROXY || false });
     await app.listen(port, process.env.HOST || '127.0.0.1');
     console.log(`Agent Rendezvous listening at ${publicUrl}`);
     let stopping = false;

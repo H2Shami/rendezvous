@@ -8,10 +8,11 @@ import type { Service } from './service.js';
 import { requestLogging, safeOrigin } from './logging.js';
 
 const root = new URL('../', import.meta.url);
-export function createApplication(service: Service, config: { publicUrl?: string; trustProxy?: string | boolean } = {}) {
+export function createApplication(service: Service, config: { publicUrl?: string; frontendOrigin?: string; trustProxy?: string | boolean } = {}) {
   const app = express(); app.disable('x-powered-by');
   let base = config.publicUrl || 'http://127.0.0.1:3000';
   if (config.trustProxy) app.set('trust proxy', config.trustProxy);
+  const frontendOrigin = config.frontendOrigin ? new URL(config.frontendOrigin).origin : undefined;
   const token = (req: express.Request) => req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
   app.use(requestLogging((event, fields) => service.log(event, fields)));
   app.use((req, res, next) => {
@@ -21,12 +22,25 @@ export function createApplication(service: Service, config: { publicUrl?: string
     if (base.startsWith('https:')) res.set('Strict-Transport-Security', 'max-age=31536000');
     try {
       requireThat(!/[?&](token|invite_token|participant_token|credential|owner_token)=/i.test(req.url), 'QUERY_CREDENTIAL_FORBIDDEN', 'Put invite secrets in the URL fragment and tokens in Authorization headers.');
-      if (req.headers.origin && req.headers.origin !== new URL(base).origin) {
+    if (req.headers.origin && req.headers.origin !== new URL(base).origin && req.headers.origin !== frontendOrigin) {
         service.log('origin.rejected', { received_origin: safeOrigin(req.headers.origin), expected_origin: new URL(base).origin });
         throw new HttpError('ORIGIN_FORBIDDEN', 'Browser origin does not match PUBLIC_URL. Open the public routing URL or correct server configuration.', 403);
       }
       service.limit(`http:${req.ip}`, 600, 60000); next();
     } catch (error) { next(error); }
+  });
+  app.options(/.*/, (req, res) => {
+    const origin = req.headers.origin;
+    if (origin && origin === frontendOrigin) {
+      res.set({ 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Authorization,Content-Type,X-Request-ID', 'Access-Control-Max-Age': '600' });
+      return res.sendStatus(204);
+    }
+    res.sendStatus(204);
+  });
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && origin === frontendOrigin) res.set({ 'Access-Control-Allow-Origin': origin, Vary: 'Origin' });
+    next();
   });
   app.use(express.raw({ type: 'application/json', limit: 65536 }));
   app.use((req, _res, next) => {
