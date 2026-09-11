@@ -4,20 +4,20 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:net';
+import { createServer, type AddressInfo } from 'node:net';
 
 test('duplicate startup refuses storage before opening PostgreSQL and clean restart preserves rooms', async () => {
-  const probe = createServer(); await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
-  const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
+  const probe = createServer(); await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
+  const port = (probe.address() as AddressInfo).port; await new Promise(resolve => probe.close(resolve));
   const dir = await mkdtemp(join(tmpdir(), 'rendezvous-startup-'));
   const base = `http://127.0.0.1:${port}`;
   function start() {
-    const child = spawn(process.execPath, ['src/main.js'], { env: { ...process.env, DATABASE_URL: '', DATA_DIR: dir, PORT: String(port), HOST: '127.0.0.1', PUBLIC_URL: base }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['dist/main.js'], { env: { ...process.env, DATABASE_URL: '', DATA_DIR: dir, PORT: String(port), HOST: '127.0.0.1', PUBLIC_URL: base }, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
-    const done = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => resolve({ code, output })); });
-    const ready = new Promise((resolve, reject) => {
+    const done = new Promise<{ code: number | null; output: string }>((resolve, reject) => { child.once('error', reject); child.once('exit', code => resolve({ code, output })); });
+    const ready = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`Startup timed out: ${output}`)), 10000);
-      const add = data => { output += data; if (output.includes('listening at')) { clearTimeout(timer); resolve(); } };
+      const add = (data: Buffer) => { output += data; if (output.includes('listening at')) { clearTimeout(timer); resolve(); } };
       child.stdout.on('data', add); child.stderr.on('data', add);
       child.once('exit', () => { clearTimeout(timer); reject(new Error(output)); });
     });

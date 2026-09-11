@@ -1,3 +1,4 @@
-import { build } from 'esbuild';
-await build({ entryPoints: ['client/cli.js'], bundle: true, platform: 'node', target: 'node22', format: 'esm', outfile: 'dist/client.mjs', legalComments: 'inline' });
-console.log('Built standalone dist/client.mjs');
+import { spawnSync } from 'node:child_process';
+const result = spawnSync('tsc', ['-p', 'tsconfig.json'], { stdio: 'inherit', shell: process.platform === 'win32' });
+if (result.error) throw result.error;
+process.exitCode = result.status ?? 1;

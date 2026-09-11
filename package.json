@@ -7,31 +7,32 @@
     "node": ">=22"
   },
   "scripts": {
-    "start": "node src/main.js",
-    "dev": "node --watch src/main.js",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts",
     "build": "node scripts/build.js",
-    "test": "node --test --test-concurrency=1 test/*.test.js",
-    "check": "npm run build && npm test",
-    "demo": "node scripts/demo.js",
-    "test:postgres": "node scripts/test-postgres.js",
-    "test:ui": "npm run build && node --test e2e/ui.test.js",
+    "test": "npm run build && tsx --test --test-concurrency=1 test/*.test.ts",
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc -p tsconfig.tests.json",
+    "demo": "tsx scripts/demo.ts",
+    "test:postgres": "npm run build && node scripts/test-postgres.js",
+    "test:ui": "npm run build && tsx --test e2e/ui.test.ts",
     "demo:tmux": "npm run build && node scripts/tmux-demo.js"
-  },
-  "bin": {
-    "rendezvous": "./client/cli.js"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
-    "canonicalize": "^5.0.0",
     "express": "^5.2.1",
     "jsonc-parser": "^3.3.1",
     "pg": "^8.23.0",
-    "proper-lockfile": "^4.1.2",
-    "ws": "^8.21.3"
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.2",
+    "@types/pg": "^8.23.1",
+    "@types/proper-lockfile": "^4.1.4",
     "embedded-postgres": "^18.4.0-beta.17",
-    "esbuild": "^0.28.2"
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
   }
 }

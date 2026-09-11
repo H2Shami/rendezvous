@@ -18,8 +18,8 @@ const postgres = new EmbeddedPostgres({ databaseDir: join(dir, 'db'), user: 'ren
 try {
   await postgres.initialise(); await postgres.start(); await postgres.createDatabase('rendezvous_test');
   console.log('Running integration suite against native PostgreSQL with a 10-connection pool.');
-  const files = (await readdir('test')).filter(x => x.endsWith('.test.js')).map(x => `test/${x}`);
-  const child = spawn(process.execPath, ['--test', '--test-concurrency=1', ...files], { stdio: 'inherit', env: {
+  const files = (await readdir('test')).filter(x => x.endsWith('.test.ts')).map(x => `test/${x}`);
+  const child = spawn(process.execPath, ['--import', 'tsx', '--test', '--test-concurrency=1', ...files], { stdio: 'inherit', env: {
     ...process.env, TEST_DATABASE_URL: `postgresql://rendezvous:${password}@127.0.0.1:${port}/rendezvous_test`,
   } });
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => resolve(code)); });

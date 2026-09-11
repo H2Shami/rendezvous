@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { openDatabase } from './db.js';
+import { openDatabase, type Database } from './db.js';
 import { loadSecrets, security } from './security.js';
 import { Service } from './service.js';
 import { createApplication } from './server.js';
@@ -15,27 +15,27 @@ async function main() {
   const dataDir = resolve(process.env.DATA_DIR || '.data');
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const release = await lockfile.lock(dataDir, { lockfilePath: resolve(dataDir, 'server.lock'), stale: 120000, update: 10000, retries: 0 })
-    .catch(err => { if (err.code === 'ELOCKED') throw new Error('SERVER_ALREADY_RUNNING: Another process owns this data directory. It may be outside your sandbox. Retry the HTTP request with approved network access; do not remove database lock files.'); throw err; });
-  let db, app;
+    .catch(err => { if ((err as NodeJS.ErrnoException).code === 'ELOCKED') throw new Error('SERVER_ALREADY_RUNNING: Another process owns this data directory. It may be outside your sandbox. Retry the HTTP request with approved network access; do not remove database lock files.'); throw err; });
+  let db: Database | undefined, app: ReturnType<typeof createApplication> | undefined;
   try {
     const secrets = await loadSecrets(resolve(dataDir, 'server-secrets.json'));
     db = await openDatabase({ databaseUrl: process.env.DATABASE_URL, dataDir: resolve(dataDir, 'postgres') });
-    const numeric = (name, fallback) => {
+    const numeric = (name: string, fallback: number) => {
       const value = Number(process.env[name] ?? fallback);
       if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer.`);
       return value;
     };
-    const service = new Service(db, security(secrets, Date.now, numeric('TOKEN_SECONDS', 900)), {
+    const service = new Service(db, security(secrets), {
       ttlSeconds: numeric('SESSION_TTL_SECONDS', 86400), maxTtlSeconds: numeric('MAX_TTL_SECONDS', 604800),
-      messageBudget: numeric('MESSAGE_BUDGET', 10000), messagesPerMinute: numeric('MESSAGES_PER_MINUTE', 60),
       sessionsPerHour: numeric('SESSIONS_PER_HOUR', 10), joinsPerHour: numeric('JOINS_PER_HOUR', 30),
       retentionSeconds: numeric('RETENTION_SECONDS', 86400),
+      messagesPerMinute: numeric('MESSAGES_PER_MINUTE', 60), messageBudget: numeric('MESSAGE_BUDGET', 10000),
     });
     app = createApplication(service, { publicUrl, trustProxy: process.env.TRUST_PROXY || false });
     await app.listen(port, process.env.HOST || '127.0.0.1');
     console.log(`Agent Rendezvous listening at ${publicUrl}`);
     let stopping = false;
-    async function stop() { if (stopping) return; stopping = true; await app.close(); await db.close(); await release(); }
+    async function stop() { if (stopping) return; stopping = true; await app?.close(); await db?.close(); await release(); }
     process.on('SIGINT', () => void stop()); process.on('SIGTERM', () => void stop());
   } catch (e) { await app?.close().catch(() => {}); await db?.close(); await release(); throw e; }
 }
