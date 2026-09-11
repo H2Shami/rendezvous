@@ -24,6 +24,9 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
   proxy:
     image: caddy:2
     environment:
@@ -35,7 +38,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    depends_on: [app]
+    depends_on: [app, frontend]
     restart: unless-stopped
 volumes:
   postgres:

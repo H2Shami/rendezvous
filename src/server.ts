@@ -5,6 +5,7 @@ import { HttpError, requireThat } from './validation.js';
 import { parseJSON } from './json.js';
 import { discovery, endpoints, htmlInstructions } from './instructions.js';
 import type { Service } from './service.js';
+import { requestLogging, safeOrigin } from './logging.js';
 
 const root = new URL('../', import.meta.url);
 export function createApplication(service: Service, config: { publicUrl?: string; trustProxy?: string | boolean } = {}) {
@@ -12,6 +13,7 @@ export function createApplication(service: Service, config: { publicUrl?: string
   let base = config.publicUrl || 'http://127.0.0.1:3000';
   if (config.trustProxy) app.set('trust proxy', config.trustProxy);
   const token = (req: express.Request) => req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+  app.use(requestLogging((event, fields) => service.log(event, fields)));
   app.use((req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
@@ -19,7 +21,10 @@ export function createApplication(service: Service, config: { publicUrl?: string
     if (base.startsWith('https:')) res.set('Strict-Transport-Security', 'max-age=31536000');
     try {
       requireThat(!/[?&](token|invite_token|participant_token|credential|owner_token)=/i.test(req.url), 'QUERY_CREDENTIAL_FORBIDDEN', 'Put invite secrets in the URL fragment and tokens in Authorization headers.');
-      requireThat(!req.headers.origin || req.headers.origin === new URL(base).origin, 'ORIGIN_FORBIDDEN', 'Cross-origin requests are not supported.', 403);
+      if (req.headers.origin && req.headers.origin !== new URL(base).origin) {
+        service.log('origin.rejected', { received_origin: safeOrigin(req.headers.origin), expected_origin: new URL(base).origin });
+        throw new HttpError('ORIGIN_FORBIDDEN', 'Browser origin does not match PUBLIC_URL. Open the public routing URL or correct server configuration.', 403);
+      }
       service.limit(`http:${req.ip}`, 600, 60000); next();
     } catch (error) { next(error); }
   });
@@ -76,10 +81,16 @@ export function createApplication(service: Service, config: { publicUrl?: string
     if (error.type === 'entity.too.large') err = new HttpError('REQUEST_TOO_LARGE', 'Request exceeds 64 KB.', 413);
     else if (error instanceof HttpError) err = error;
     else if (error instanceof SyntaxError) err = new HttpError('INVALID_JSON', 'Malformed JSON.');
-    else { service.log('server.error'); err = new HttpError('INTERNAL_ERROR', 'Internal server error.', 500); }
+    else {
+      // Raw exception messages can contain SQL parameters or credentials.
+      service.log('server.error', { error_type: error instanceof TypeError ? 'TypeError' : error instanceof Error ? 'Error' : 'Unknown',
+        error_code: typeof error?.code === 'string' && /^(?:[0-9A-Z]{5}|E[A-Z_]{2,30})$/.test(error.code) ? error.code : undefined });
+      err = new HttpError('INTERNAL_ERROR', 'Internal server error.', 500);
+    }
+    res.locals.error_code = err.code;
     service.log('request.rejected', { code: err.code });
     if (err.status === 429) res.set('Retry-After', '60');
-    res.status(err.status).json({ error: { code: err.code, message: err.message } });
+    res.status(err.status).json({ error: { code: err.code, message: err.message }, request_id: res.locals.request_id });
   };
   app.use(errors);
   const server = createServer({ requestTimeout: 15000, headersTimeout: 10000 }, app);

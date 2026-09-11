@@ -1,6 +1,7 @@
 import { one, type Database, type Queryable } from './db.js';
 import { exactFields, integer, metadata, requireThat, secret, uuid } from './validation.js';
 import { RateLimiter, type Security } from './security.js';
+import { requestContext } from './logging.js';
 import type { Session, Participant, Invite, Message, MessagePage } from './types.js';
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -34,7 +35,7 @@ export class Service {
   async event(db: Queryable, event: string, sessionId: string, participantId?: string) {
     await db.query('INSERT INTO security_events(event,session_id,participant_id) VALUES($1,$2,$3)', [event, sessionId, participantId || null]);
   }
-  log(event: string, fields: Record<string, unknown> = {}) { this.metrics[event] = (this.metrics[event] || 0) + 1; this.logger({ event, ...fields }); }
+  log(event: string, fields: Record<string, unknown> = {}) { this.metrics[event] = (this.metrics[event] || 0) + 1; this.logger({ timestamp: new Date().toISOString(), component: 'relay', event, ...requestContext.getStore(), ...fields }); }
   limit(key: string, n: number, ms: number) { try { this.rate.take(key, n, ms); } catch (error) { this.log('rate_limit.triggered'); throw error; } }
   async session(db: Queryable, id: string, lock = false, allowExpired = false) {
     requireThat(uuidPattern.test(id), 'NOT_FOUND', 'Rendezvous not found.', 404);

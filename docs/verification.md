@@ -1,5 +1,9 @@
 # HTTP V1 verification
 
+## September 11 frontend and development-tooling update
+
+`npm run check` passes 18 tests, including the combined backend launcher, shutdown of both ports, shared request IDs across proxy/relay/business logs, credential/content redaction, proxy upstream JSON errors, and a full 60-second proxied poll with disconnect cleanup. Next.js production build and the browser flow pass, including readable diagnostics for HTML returned by a misrouted API, create/share/send/reload/revoke/close. Next.js remains independent; `npm run dev:backend` watches Express and the local routing proxy and formats their output with `[server]` / `[proxy]` labels. Raw service logs remain structured JSON outside this development launcher.
+
 Verified locally on September 10, 2026:
 
 - `npm run check`: strict TypeScript checks for server, tests and demo; 14 integration tests passed.
