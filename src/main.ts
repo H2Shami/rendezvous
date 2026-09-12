@@ -8,7 +8,7 @@ import lockfile from 'proper-lockfile';
 
 async function main() {
   const port = Number(process.env.PORT || 3000);
-  const publicUrl = (process.env.PUBLIC_URL || `http://localhost:${port}`).replace(/\/$/, '');
+  const publicUrl = (process.env.NGROK_DOMAIN || process.env.PUBLIC_URL || `http://localhost:${port}`).replace(/\/$/, '');
   const url = new URL(publicUrl);
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('PUBLIC_URL must be an origin.');
   if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('Non-loopback PUBLIC_URL must use HTTPS.');
@@ -31,7 +31,7 @@ async function main() {
       retentionSeconds: numeric('RETENTION_SECONDS', 86400),
       messagesPerMinute: numeric('MESSAGES_PER_MINUTE', 60), messageBudget: numeric('MESSAGE_BUDGET', 10000),
     });
-    app = createApplication(service, { publicUrl, frontendOrigin: process.env.FRONTEND_URL, trustProxy: process.env.TRUST_PROXY || false });
+    app = createApplication(service, { publicUrl, frontendOrigin: process.env.FRONTEND_URL || process.env.NGROK_DOMAIN, trustProxy: process.env.TRUST_PROXY || false });
     await app.listen(port, process.env.HOST || '127.0.0.1');
     console.log(`Agent Rendezvous listening at ${publicUrl}`);
     let stopping = false;

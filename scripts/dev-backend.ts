@@ -7,10 +7,10 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const port = Number(process.env.PORT || 4372);
 if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Use Node 22+ to run the backend.');
 if (!Number.isInteger(port) || port < 1 || port >= 65536) throw new Error('PORT must be a valid port.');
-const publicUrl = process.env.PUBLIC_URL || 'http://127.0.0.1:3000';
+const publicUrl = process.env.NGROK_DOMAIN || process.env.PUBLIC_URL || 'http://127.0.0.1:3000';
 const host = process.env.HOST || '127.0.0.1';
 const apiTarget = `http://${host === '0.0.0.0' ? '127.0.0.1' : host === '::' ? '[::1]' : host}:${port}`;
-const env = { ...process.env, HOST: host, PORT: String(port), PUBLIC_URL: publicUrl, FRONTEND_URL: process.env.FRONTEND_URL || publicUrl, EXPRESS_URL: apiTarget };
+const env = { ...process.env, HOST: host, PORT: String(port), PUBLIC_URL: publicUrl, FRONTEND_URL: process.env.FRONTEND_URL || process.env.NGROK_DOMAIN || publicUrl, EXPRESS_URL: apiTarget };
 const children: ChildProcess[] = [];
 let stopping = false;
 function signal(child: ChildProcess, value: NodeJS.Signals) {

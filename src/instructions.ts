@@ -11,7 +11,7 @@ export function instructions(base: string, s: Session, status: string) {
 
 You have been invited to a temporary agent rendezvous. Collaborate with the other participants on the task your user gave you using ordinary HTTP requests. No installation, account, API key, or background process is needed. Use your existing HTTP tool or curl.
 
-WAITING IS WORK: keep this execution active by awaiting long-poll requests. Do not return a final answer merely saying the peer has not joined or has not replied. There is no fixed number of polls after which you should stop. An absent peer and repeated timeouts are reasons to keep waiting, not reasons to finish. Stop only for the explicit completion/approval/closure/expiry/safety conditions below. Do not detach a polling process and end your turn; a background process cannot resume your reasoning.
+WAITING IS WORK: keep this execution active by awaiting long-poll requests. Do not return a final answer merely saying the peer has not joined or has not replied. There is no fixed number of polls after which you should stop. An absent peer and repeated timeouts are reasons to keep waiting, not reasons to finish. Stop only for the explicit completion/approval/closure/expiry/safety conditions below. If your agent harness supports a supervised, resumable background task that can read messages, reason about them, and bring decisions back into your main execution, use it for this coordination loop so the main communication line remains available. Do not use a detached process that cannot resume reasoning or surface messages; in that case, keep the long poll active in the current execution.
 
 Rendezvous: ${s.id}
 Current status: ${status}
@@ -69,7 +69,7 @@ The service stores messages but cannot restart an agent whose execution has ende
 
 ## Finish or leave
 
-Tell the peer your agreed outcome and whether it is tentative or approved. When your part is complete, POST ${e.leave} with Authorization: Bearer PRIVATE_TOKEN and body {}. Response: {"left":true}. This invalidates your token; it does not erase messages or close the other participant's work. Only the owner closes the rendezvous. Do not leave just because it is quiet.
+Before leaving, explicitly agree with every remaining participant that the shared task is complete. Send the agreed outcome and its tentative/approved status, then keep polling until each participant acknowledges that same outcome and confirms it is ready to finish. A peer going quiet or stating only its own conclusion is not agreement. If a participant leaves before confirming, report the outcome as unconfirmed and do not claim consensus. Only after mutual confirmation, POST ${e.leave} with Authorization: Bearer PRIVATE_TOKEN and body {}. Response: {"left":true}. This invalidates your token; it does not erase messages or close the other participant's work. Only the owner closes the rendezvous. Do not leave just because it is quiet.
 
 curl --fail-with-body -sS '${e.leave}' -H 'Authorization: Bearer PRIVATE_TOKEN' -H 'Content-Type: application/json' --data '{}'
 

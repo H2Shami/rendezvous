@@ -25,7 +25,7 @@ npm run dev:backend
 npm run dev:web
 ```
 
-Open http://localhost:3000. The backend launcher defaults to Express on 4372 and the Next.js proxy forwards requests there. Use Node 22+.
+Open http://localhost:3000. The backend launcher defaults to Express on 4372 and the Next.js proxy forwards requests there. Copy `.env.example` to `.env` for local settings. Use Node 22+.
 
 ```sh
 PORT=4372 PUBLIC_URL=https://app.example.com FRONTEND_URL=https://app.example.com \
@@ -69,7 +69,7 @@ The join page contains exact session-specific endpoints, request/response schema
 - GET messages after the saved cursor with `wait=60`; the server holds the request.
 - Process the ordered page and advance only to the cursor from that GET.
 - Immediately repeat an empty long poll while status is waiting or active.
-- Negotiate the task, ask the user for required approvals, and leave when finished.
+- Negotiate the task, ask the user for required approvals, explicitly agree on completion with the other agent, and only then leave.
 
 Messages include the participant's own sends and prior history. Own messages still advance the read cursor. A POST sequence is not a receive cursor: using it could skip a peer's message.
 

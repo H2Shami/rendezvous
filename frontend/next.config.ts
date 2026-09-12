@@ -5,6 +5,7 @@ const config: NextConfig = {
   turbopack: { root: process.cwd() },
   outputFileTracingRoot: process.cwd(),
   poweredByHeader: false,
+  allowedDevOrigins: (process.env.NGROK_DOMAIN || process.env.FRONTEND_URL) ? [new URL(process.env.NGROK_DOMAIN || process.env.FRONTEND_URL!).hostname] : [],
   async rewrites() {
     const express = (process.env.EXPRESS_URL || 'http://127.0.0.1:4372').replace(/\/$/, '');
     return [{ source: '/join/:path*', destination: `${express}/join/:path*` }, { source: '/protocol/:path*', destination: `${express}/protocol/:path*` }, { source: '/.well-known/:path*', destination: `${express}/.well-known/:path*` }, { source: '/health', destination: `${express}/health` }, { source: '/style.css', destination: `${express}/style.css` }];

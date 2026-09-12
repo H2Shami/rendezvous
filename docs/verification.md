@@ -2,7 +2,7 @@
 
 ## September 11 frontend and development-tooling update
 
-`npm run check` passes 18 tests, including the combined backend launcher, shutdown of both ports, shared request IDs across proxy/relay/business logs, credential/content redaction, proxy upstream JSON errors, and a full 60-second proxied poll with disconnect cleanup. Next.js production build and the browser flow pass, including readable diagnostics for HTML returned by a misrouted API, create/share/send/reload/revoke/close. Next.js remains independent; `npm run dev:backend` watches Express and the local routing proxy and formats their output with `[server]` / `[proxy]` labels. Raw service logs remain structured JSON outside this development launcher.
+`npm run check` covers the backend launcher, credential/content redaction, message ordering, long-poll behavior, and the browser flow. Next.js now forwards API and instruction requests directly to Express; there is no separate development proxy process. Raw service logs remain structured JSON outside the development launcher.
 
 Verified locally on September 10, 2026:
 

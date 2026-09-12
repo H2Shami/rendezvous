@@ -10,7 +10,6 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { fixture } from '../test/helpers.js';
 import { testClient } from '../test/http-client.js';
-import { createGateway } from '../scripts/proxy.js';
 
 async function freePort() {
   const probe = createServer(); await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
@@ -20,13 +19,13 @@ async function freePort() {
 test('owner can create, observe untrusted content safely, revoke and close in a browser', async () => {
   const port = await freePort(), frontendPort = await freePort();
   const base = `http://127.0.0.1:${port}`;
-  const f = await fixture({ publicUrl: base });
+  const publicBase = `http://127.0.0.1:${frontendPort}`;
+  const f = await fixture({ publicUrl: publicBase });
   const frontendDir = fileURLToPath(new URL('../frontend', import.meta.url));
   const frontend = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], {
-    cwd: frontendDir, env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: frontendDir, env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1', EXPRESS_URL: base }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let frontendLog = ''; frontend.stdout.on('data', chunk => { frontendLog += chunk; }); frontend.stderr.on('data', chunk => { frontendLog += chunk; });
-  const gateway = createGateway(f.base, `http://127.0.0.1:${frontendPort}`);
   const dir = await mkdtemp(join(tmpdir(), 'rendezvous-browser-'));
   let browser;
   try {
@@ -36,14 +35,12 @@ test('owner can create, observe untrusted content safely, revoke and close in a 
       if (frontend.exitCode !== null || Date.now() > deadline) throw new Error(`Next failed to start: ${frontendLog}`);
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    await new Promise<void>(resolve => gateway.listen(port, '127.0.0.1', resolve));
-    assert.equal((await fetch(f.base)).status, 404); // Express no longer serves the owner UI.
-    assert.equal((await fetch(`${base}/health`)).status, 200);
+    assert.equal((await fetch(`http://127.0.0.1:${frontendPort}/health`)).status, 200);
     assert.equal((await fetch(`${base}/health`, { headers: { Origin: 'https://untrusted.example' } })).status, 403);
     browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
     const pageErrors: string[] = []; page.on('pageerror', error => pageErrors.push(error.message));
-    await page.goto(base);
+    await page.goto(publicBase);
     await page.route('**/api/v1/sessions', route => route.fulfill({ status: 404, contentType: 'text/html', body: '<!DOCTYPE html><h1>Wrong upstream</h1>' }));
     await page.getByRole('button', { name: 'Create a session' }).click();
     await page.waitForFunction(() => document.querySelector('#error')!.textContent.includes('API routing error'));
@@ -87,7 +84,7 @@ test('owner can create, observe untrusted content safely, revoke and close in a 
     assert.equal(await page.locator('#copy-invite').isDisabled(), true); // No secret reconstructed from storage.
     await page.locator('#new-invite').click();
     await page.waitForFunction(() => document.querySelector<HTMLInputElement>('#invite-url')!.value.startsWith('http'));
-    assert.ok((await page.locator('#invite-url').inputValue()).startsWith(base));
+    assert.ok((await page.locator('#invite-url').inputValue()).startsWith(publicBase));
     await mkdir('.data', { recursive: true });
     await page.screenshot({ path: '.data/owner-ui.png', fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
@@ -103,8 +100,7 @@ test('owner can create, observe untrusted content safely, revoke and close in a 
     assert.deepEqual(pageErrors, []);
     await f.db.query('DELETE FROM sessions WHERE id=$1', [a.membership.rendezvous_id]);
   } finally {
-    await browser?.close(); gateway.closeAllConnections();
-    await new Promise<void>(resolve => gateway.close(() => resolve()));
+    await browser?.close();
     if (frontend.exitCode === null) { const stopped = once(frontend, 'exit'); frontend.kill('SIGTERM'); await stopped; }
     await f.stop(); await rm(dir, { recursive: true, force: true });
   }

@@ -9,9 +9,8 @@
   "scripts": {
     "start": "node dist/main.js",
     "dev": "tsx watch src/main.ts",
-    "dev:backend": "node --import tsx scripts/dev-backend.ts",
+    "dev:backend": "node --env-file=.env --import tsx scripts/dev-backend.ts",
     "dev:web": "npm --prefix frontend run dev",
-    "dev:proxy": "tsx scripts/dev-proxy.ts",
     "build:web": "npm --prefix frontend run build",
     "start:web": "npm --prefix frontend run start",
     "build": "node scripts/build.js",
@@ -37,7 +36,6 @@
     "@types/pg": "^8.23.1",
     "@types/proper-lockfile": "^4.1.4",
     "embedded-postgres": "^18.4.0-beta.17",
-    "http-proxy-middleware": "^4.2.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   }
