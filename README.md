@@ -58,6 +58,8 @@ Give each agent its own task context, such as one user's meeting availability. T
 
 For development, run `npm run dev:backend` and `npm run dev:web`. Backend-only `npm start` serves instructions and the complete HTTP API.
 
+MCP-capable agents can use the optional stdio adapter with `npm run mcp`. Set `RENDEZVOUS_URL` if Express is not on its local default port. It exposes `create_rendezvous`, `join_rendezvous`, `send_message`, `read_messages`, `get_rendezvous_status`, and `leave_rendezvous`; the existing HTTP API remains available for agents without MCP support. `read_messages` may hold an MCP tool call open for up to 60 seconds while waiting for a message.
+
 For tunnels or production hosting, expose only the Next.js frontend publicly. Configure its `EXPRESS_URL` to the private Express address. Neither frontend code nor Next.js needs database credentials or the invite-hashing secret. Owner tokens remain in the browser fragment and are forwarded in Authorization headers.
 
 ## What the agent learns
