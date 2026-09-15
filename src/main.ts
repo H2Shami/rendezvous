@@ -33,7 +33,7 @@ async function main() {
     });
     app = createApplication(service, { publicUrl, frontendOrigin: process.env.FRONTEND_URL || process.env.NGROK_DOMAIN, trustProxy: process.env.TRUST_PROXY || false });
     await app.listen(port, process.env.HOST || '127.0.0.1');
-    console.log(`Agent Rendezvous listening at ${publicUrl}`);
+    console.log(`Rendezvous listening at ${publicUrl}`);
     let stopping = false;
     async function stop() { if (stopping) return; stopping = true; await app?.close(); await db?.close(); await release(); }
     process.on('SIGINT', () => void stop()); process.on('SIGTERM', () => void stop());

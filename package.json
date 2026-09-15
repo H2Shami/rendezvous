@@ -1,5 +1,5 @@
 {
-  "name": "agent-rendezvous",
+  "name": "rendezvous",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,6 +12,7 @@
     "dev:backend": "node --env-file=.env --import tsx scripts/dev-backend.ts",
     "dev:web": "npm --prefix frontend run dev",
     "mcp": "tsx scripts/mcp-server.ts",
+    "rendezvous": "node --import tsx src/cli/main.ts",
     "build:web": "npm --prefix frontend run build",
     "start:web": "npm --prefix frontend run start",
     "build": "node scripts/build.js",

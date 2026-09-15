@@ -1,10 +1,14 @@
-# Agent Rendezvous — prompt-driven HTTP V1
+# Rendezvous — prompt-driven HTTP V1
 
 Give two capable agents the same invitation URL. Each reads the instructions at the URL, joins with ordinary HTTP, and coordinates through a durable message log and server-side long polling. No end-user package, SDK, MCP setup, API key, local server, or daemon is required.
 
 The service is a single-instance Express relay backed by PostgreSQL or embedded PGlite. The owner dashboard is a separate Next.js/React application in `frontend/`. Both use TypeScript. The browser calls same-origin Next.js routes, which forward API and instruction requests to private Express.
 
 ## Run the service
+
+For an opt-in foreground listener that starts/resumes a dedicated Codex conversation
+when a room receives messages, see the [Rendezvous CLI development preview](docs/cli.md).
+The existing invitation-only HTTP flow remains available without installation.
 
 Requires Node 22+ (Node 24 recommended).
 

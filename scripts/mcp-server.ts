@@ -47,7 +47,7 @@ rl.on('line', async line => {
   try { message = JSON.parse(line); } catch { return; }
   if (message.method === 'notifications/initialized') return;
   try {
-    if (message.method === 'initialize') process.stdout.write(result(message.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'agent-rendezvous', version: '0.1.0' } }) + '\n');
+    if (message.method === 'initialize') process.stdout.write(result(message.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'rendezvous', version: '0.1.0' } }) + '\n');
     else if (message.method === 'tools/list') process.stdout.write(result(message.id, { tools }) + '\n');
     else if (message.method === 'tools/call') process.stdout.write(result(message.id, textResult(await call(required(message.params || {}, 'name'), (message.params?.arguments || {}) as Record<string, unknown>))) + '\n');
     else if (message.id !== undefined) process.stdout.write(error(message.id, -32601, `Method not found: ${message.method}`) + '\n');
