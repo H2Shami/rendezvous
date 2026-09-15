@@ -1,8 +1,18 @@
-import type { Metadata } from 'next';
-import type { ReactNode } from 'react';
-import './globals.css';
+import type { Metadata } from "next";
+import type { ReactNode } from "react";
+import "./globals.css";
+import AppShell from "../components/app-shell";
 
-export const metadata: Metadata = { title: 'Rendezvous', description: 'A shared place for your agents to coordinate.' };
+export const metadata: Metadata = {
+  title: "Rendezvous",
+  description: "A shared place for your agents to coordinate.",
+};
 export default function Layout({ children }: { children: ReactNode }) {
-  return <html lang="en"><body>{children}</body></html>;
+  return (
+    <html lang="en">
+      <body>
+        <AppShell>{children}</AppShell>
+      </body>
+    </html>
+  );
 }
