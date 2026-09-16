@@ -6,36 +6,97 @@ the agent's structured reply, then waits without running inference. Subsequent
 peer messages resume that exact conversation. Your ordinary desktop/TUI chat is
 not touched. Each state file represents one room participant and one conversation.
 
-## Start locally
+## Install
 
-Prerequisites: Node 22+, `npm ci`, an installed Codex CLI authenticated with
-`codex login`, and a running Rendezvous server. Start the backend/frontend as usual;
-create a room in the dashboard. No plugin or additional OpenAI API key is required
-if your Codex installation is already authenticated. Model usage is billed/counts
-against the account used by Codex.
+Requires Node 22+ (Node 24 recommended). The CLI is packaged separately from the
+server as `rendezvous-room-cli`, exposing the `rendezvous` executable. End users
+need neither the source repository nor TypeScript or database dependencies.
 
-1. Create a local text file containing your task, relevant information you permit
-   sharing, and boundaries. This is the local user's instruction, not remote input.
-2. Set `RENDEZVOUS_INVITATION_URL` to the full invitation, including `#secret`.
-   Prefer a secret manager or a shell's hidden-input facility; pasting an export
-   into a shell can store the secret in history. The CLI does not read the server's
-   `.env` or need its database credentials.
-3. Run from this repository:
+The package is not published by this change. Build a distributable tarball from
+the repository and install it locally or give it to an end user:
 
 ```sh
-npm run rendezvous -- listen \
+npm ci
+npm run pack:cli
+npm install -g ./rendezvous-room-cli-0.1.0.tgz
+rendezvous --version
+rendezvous --help
+```
+
+The tarball contains compiled CLI JavaScript and this guide, and declares only
+`proper-lockfile` as a runtime dependency. npm installs that dependency. The private
+root package remains the server/development project. The standalone manifest is
+`packages/cli/package.json`; `npm run build:cli` prepares its compiled files.
+
+Once a maintainer publishes under an available, controlled npm name, users can
+install by that name (`npm install -g rendezvous-room-cli` if the current name is
+retained). Registry ownership/name availability and publishing are separate release
+steps; the tarball installation above works before publication.
+
+## Create a room
+
+You need a running Rendezvous service, either hosted or local. Room creation does
+not require Codex, a dashboard, or a user account:
+
+```sh
+rendezvous create --server http://localhost:3000
+```
+
+This prints the invitation URL to stdout and saves the invitation, owner URL,
+room ID, and expiration in a new private file at
+`~/.rendezvous/created/<random-id>.json`. Progress, the saved path, and a suggested
+listen command go to stderr. Share the invitation with peers. The owner URL in
+the file opens the dashboard; keep it private.
+
+```sh
+rendezvous create --server http://localhost:3000 \
+  --participants 3 --ttl 3600 --output "$HOME/.rendezvous/demo-room.json"
+```
+
+`--participants` defaults to 2 and sets both room capacity and invitation uses.
+`--ttl` is seconds; omission uses server policy (normally 24 hours). `--server`
+overrides `RENDEZVOUS_URL`. HTTPS is required except on loopback. Existing output
+files are never overwritten, and creation requests are never automatically retried.
+If delivery is uncertain, the reserved file may be empty; inspect before retrying.
+
+For automation, `create --json` emits a JSON object with `session_id`, `invite_url`,
+`owner_url`, `expires_at`, and `room_file`. This output contains private URLs.
+`--quiet` / `-q` suppresses progress, but preserves results and errors.
+
+## Start an agent
+
+Listening additionally requires an installed Codex CLI authenticated with
+`codex login`. No plugin or additional OpenAI API key is required if your Codex
+installation is already authenticated. Model usage counts against that account.
+
+1. Write a local task file with the objective, context you permit sharing, and
+   boundaries. This is the local user's instruction, not remote input.
+2. Use the room file saved by `create`:
+
+```sh
+rendezvous listen \
+  --room-file "$HOME/.rendezvous/demo-room.json" \
   --workspace /absolute/path/to/your/repository \
   --objective-file /absolute/path/to/task.txt
 ```
 
-The invite selects the server automatically (including an ngrok frontend URL).
-HTTPS is mandatory except on loopback. The terminal prints the private state path,
-room, workspace, and turn status, never credentials or full agent output.
+Alternatively, set `RENDEZVOUS_INVITATION_URL` to a full invitation including
+`#secret`; use a secret manager or hidden shell input to avoid shell history.
+`--room-file` takes precedence over that environment variable. The invitation
+selects the server automatically. The CLI does not read the server's `.env`.
+
+Workspace defaults to the current directory on a first run and the saved directory
+on resume. `--objective-file -` reads piped stdin and never prompts. Task input is
+limited to 32 KB. `--name` sets the display name (default: Codex).
+
+For two local agents, use separate `--state` paths with the same invitation; each
+joins as its own participant. Do not share the creator's room file with remote
+peers, because it also contains owner credentials; share only the invitation URL.
 
 Stop with Ctrl+C. Resume using the printed path:
 
 ```sh
-npm run rendezvous -- listen --state /absolute/path/to/state.json
+rendezvous listen --state /absolute/path/to/state.json
 ```
 
 Do not pass the objective file again unless you want to deliver updated user
@@ -105,13 +166,70 @@ The [official Codex non-interactive documentation](https://learn.chatgpt.com/doc
 documents JSONL output, structured results, sandboxing, and explicit session resume.
 The implementation was checked against CLI 0.154.0; installed versions may differ.
 
-## Verification
+## Test locally
+
+From a checkout, use Node 22+ (for nvm: `nvm use 24`) and install dependencies:
+
+```sh
+npm ci
+npm --prefix frontend ci
+```
+
+Run the server and dashboard in separate terminals:
+
+```sh
+npm run dev:backend
+npm run dev:web
+```
+
+In a third terminal, create a room without opening the dashboard:
+
+```sh
+npm run rendezvous -- create --server http://localhost:3000 \
+  --output "$HOME/.rendezvous/demo-room.json"
+```
+
+Create `task.txt` with your instructions, then run:
+
+```sh
+npm run rendezvous -- listen \
+  --room-file "$HOME/.rendezvous/demo-room.json" \
+  --objective-file task.txt --max-turns 2
+```
+
+Open the owner URL from the private room file in a browser and send a message.
+The agent should reply; a second message resumes the same conversation. To test
+two local agents, run a second listener with its own objective file and explicit
+`--state "$HOME/.rendezvous/second-agent.json"`.
+
+To test without installing globally, build and invoke the compiled executable:
+
+```sh
+npm run build:cli
+node packages/cli/dist/cli/main.js --help
+```
+
+To verify the actual end-user installation, run `npm run pack:cli`, install the
+tarball using the installation instructions above, and repeat with `rendezvous`.
+Use `npm install -g --prefix /tmp/rendezvous-install ./rendezvous-room-cli-0.1.0.tgz`
+and `/tmp/rendezvous-install/bin/rendezvous --help` for an isolated Unix installation.
+
+Automated checks (no model spend; the live smoke test skips by default):
 
 ```sh
 npm run typecheck
-npx tsx --test test/cli.test.ts
-npm run rendezvous -- --help
+npm run test:cli
 ```
+
+Command tests cover help, invalid flags, output streams, private room files,
+no-overwrite behavior, JSON output, and actual HTTP room creation. Bridge/runtime
+tests cover polling, state recovery, and Codex subprocess behavior.
+
+Exit codes: 0 for normal completion (including NEEDS_USER and turn limits), 1 for
+operational errors, 2 for usage errors, and 130 for an interrupted invocation.
+Help and version work without server/Codex setup. Listen progress goes to stderr;
+stdout is reserved for command results. When scripting from a checkout, use
+`npm run --silent rendezvous -- create --json ...` to suppress npm's own banner.
 
 Optional live adapter smoke test (two small model turns, using your Codex account):
 

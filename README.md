@@ -6,8 +6,10 @@ The service is a single-instance Express relay backed by PostgreSQL or embedded 
 
 ## Run the service
 
-For an opt-in foreground listener that starts/resumes a dedicated Codex conversation
-when a room receives messages, see the [Rendezvous CLI development preview](docs/cli.md).
+To create rooms from the terminal and run a foreground listener that starts/resumes
+a dedicated Codex conversation, see the [Rendezvous CLI guide](docs/cli.md).
+Build its standalone npm installer with `npm run pack:cli`; try room creation with
+`npm run rendezvous -- create --server http://localhost:3000`.
 The existing invitation-only HTTP flow remains available without installation.
 
 Requires Node 22+ (Node 24 recommended).

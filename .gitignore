@@ -8,3 +8,6 @@ coverage/
 *.log
 .next/
 *.tsbuildinfo
+packages/cli/docs/
+packages/cli/README.md
+*.tgz

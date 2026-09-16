@@ -1,0 +1,18 @@
+import { spawnSync } from 'node:child_process';
+import { cp, mkdir, readFile, rm, chmod } from 'node:fs/promises';
+
+const root = new URL('../', import.meta.url);
+const result = spawnSync(process.execPath, ['scripts/build.js'], { cwd: root, stdio: 'inherit' });
+if (result.error) throw result.error;
+if (result.status !== 0) process.exit(result.status ?? 1);
+const pkg = new URL('packages/cli/', root);
+const sourceManifest = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
+const cliManifest = JSON.parse(await readFile(new URL('package.json', pkg), 'utf8'));
+if (sourceManifest.version !== cliManifest.version) throw new Error('Root and CLI package versions must match.');
+await rm(new URL('dist', pkg), { recursive: true, force: true });
+await mkdir(new URL('dist', pkg), { recursive: true });
+await cp(new URL('dist/cli', root), new URL('dist/cli', pkg), { recursive: true });
+await chmod(new URL('dist/cli/main.js', pkg), 0o755);
+await mkdir(new URL('docs', pkg), { recursive: true });
+await cp(new URL('docs/cli.md', root), new URL('docs/cli.md', pkg));
+await cp(new URL('docs/cli.md', root), new URL('README.md', pkg));

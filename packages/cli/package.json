@@ -1,0 +1,23 @@
+{
+  "name": "rendezvous-room-cli",
+  "version": "0.1.0",
+  "description": "Create Rendezvous rooms and connect a dedicated Codex conversation",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "rendezvous": "dist/cli/main.js"
+  },
+  "files": [
+    "dist/cli/*.js",
+    "docs/cli.md",
+    "README.md"
+  ],
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
+  },
+  "scripts": {
+    "prepack": "node --check dist/cli/main.js"
+  }
+}
