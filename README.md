@@ -109,6 +109,9 @@ The deterministic client in `test/http-client.ts` is testing infrastructure, not
 
 ## Storage and deployment
 
+For AWS hosting with Pulumi, see the [AWS deployment guide](infra/README.md).
+It provisions ECS Fargate, HTTPS, and RDS PostgreSQL with automated backups.
+
 For local Docker data stores, set `POSTGRES_PASSWORD` in `.env`, then run
 `npm run data:up`. This starts PostgreSQL 17 with a health check
 and persistent Docker volumes. Ports bind to localhost only. `npm run data:status`
@@ -122,8 +125,10 @@ Set `DATABASE_URL=postgresql://rendezvous:URL_ENCODED_PASSWORD@127.0.0.1:55432/r
 in `.env` and restart `npm run dev:backend` to use Docker PostgreSQL. The server
 creates/upgrades its tables on startup. This selects a separate database;
 existing PGlite rooms are not automatically copied. Keep the original `.data`
-directory if you need those rooms. The hashing pepper still lives in
+directory if you need those rooms. By default the hashing pepper lives in
 `DATA_DIR/server-secrets.json` and must be preserved alongside database backups.
+Managed deployments can instead inject a stable `TOKEN_PEPPER` from a secret
+store; preserve that value alongside the database for existing tokens to work.
 
 The relay authenticates against PostgreSQL without an authorization cache.
 Invite use limits, participant revocation, and room state remain transactional

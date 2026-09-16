@@ -1,0 +1,4 @@
+config:
+  aws:region: us-west-2
+  rendezvous:domain: userendezvous.com
+  rendezvous:hostedZoneId: Z02297441UMB16BS5O67U

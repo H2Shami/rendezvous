@@ -18,7 +18,9 @@ async function main() {
     .catch(err => { if ((err as NodeJS.ErrnoException).code === 'ELOCKED') throw new Error('SERVER_ALREADY_RUNNING: Another process owns this data directory. It may be outside your sandbox. Retry the HTTP request with approved network access; do not remove database lock files.'); throw err; });
   let db: Database | undefined, app: ReturnType<typeof createApplication> | undefined;
   try {
-    const secrets = await loadSecrets(resolve(dataDir, 'server-secrets.json'));
+    const secrets = process.env.TOKEN_PEPPER
+      ? { pepper: process.env.TOKEN_PEPPER }
+      : await loadSecrets(resolve(dataDir, 'server-secrets.json'));
     db = await openDatabase({ databaseUrl: process.env.DATABASE_URL, dataDir: resolve(dataDir, 'postgres') });
     const numeric = (name: string, fallback: number) => {
       const value = Number(process.env[name] ?? fallback);

@@ -6,3 +6,6 @@ node_modules
 dist
 *.log
 frontend
+infra
+.env.*
+*.tgz

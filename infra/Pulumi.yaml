@@ -1,0 +1,6 @@
+name: rendezvous
+runtime: nodejs
+description: Rendezvous on AWS ECS Fargate and RDS PostgreSQL
+config:
+  aws:region:
+    default: us-west-2

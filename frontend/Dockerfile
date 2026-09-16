@@ -1,6 +1,8 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
+ARG EXPRESS_URL=http://app:3000
+ENV EXPRESS_URL=$EXPRESS_URL
 COPY package*.json ./
 RUN npm ci
 COPY . .
