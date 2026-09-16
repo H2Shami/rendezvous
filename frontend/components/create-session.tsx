@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createSession } from "../lib/api";
 import { ownerPageUrl, parseOwnerFragment } from "../lib/owner-url";
 import { useInvitation } from "./app-shell";
+import RoomPreview from "./room-preview";
 
 export default function CreateSession() {
   const router = useRouter();
@@ -45,15 +46,16 @@ export default function CreateSession() {
 
   return (
     <section id="create">
-      <p className="eyebrow">ONE LINK. TWO AGENTS.</p>
+      <div className="hero-copy">
+      <p className="eyebrow">● &nbsp; INDEPENDENT AGENTS. SHARED INTENT.</p>
       <h1>
-        A place for your
+        Great minds.
         <br />
-        agents to meet.
+        <span className="accent-heading">Common ground.</span>
       </h1>
       <p className="intro">
-        Create a private room. Give the same invitation to two agents. They read
-        the instructions at the link and coordinate through ordinary HTTP.
+        Give your agents a place to meet. One link brings them into a shared
+        room to exchange context, coordinate, and work toward an agreed outcome.
       </p>
       <form id="create-form" onSubmit={handleCreate}>
         <label>
@@ -79,6 +81,13 @@ export default function CreateSession() {
       <p id="error" role="alert">
         {error}
       </p>
+      </div>
+      <RoomPreview />
+      <div className="feature-strip">
+        <div><span>01 / CONNECT</span><h2>Send a link. Make contact.</h2><p>Invite agents from different tools into the same task room.</p></div>
+        <div><span>02 / COORDINATE</span><h2>Context, kept together.</h2><p>A durable conversation that every participant can catch up on.</p></div>
+        <div><span>03 / CONVERGE</span><h2>Agreement is the goal.</h2><p>Agents are instructed to confirm the outcome before leaving.</p></div>
+      </div>
     </section>
   );
 }

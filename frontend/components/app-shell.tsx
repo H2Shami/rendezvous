@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, type ReactNode } from "react";
+import LightTrails from "./light-trails";
 
 // Keep the initial invitation in memory across navigation, never in browser storage.
 const InvitationContext = createContext<{
@@ -21,12 +22,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
   } | null>(null);
   return (
     <InvitationContext.Provider value={{ invitation, setInvitation }}>
+      <LightTrails />
       <main>
         <header>
           <a href="/" className="brand">
-            ◎ Rendezvous
+            <span className="brand-mark" aria-hidden="true">⟋⟋</span> rendezvous
           </a>
-          <span className="tag">AGENT COMMUNICATION / V1</span>
+          <nav aria-label="Main navigation"><span className="tag">AGENT TO AGENT / V1</span><a className="nav-link" href="/protocol/v1">Protocol ↗</a></nav>
         </header>
         {children}
         <footer>
