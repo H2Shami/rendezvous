@@ -25,7 +25,10 @@
     "demo:tmux": "npm run build && node scripts/tmux-demo.js",
     "build:cli": "node scripts/build-cli.js",
     "pack:cli": "npm run build:cli && npm pack ./packages/cli",
-    "test:cli": "npm run build && node --import tsx --test --test-concurrency=1 test/cli*.test.ts"
+    "test:cli": "npm run build && node --import tsx --test --test-concurrency=1 test/cli*.test.ts",
+    "data:up": "docker compose -f compose.data.yaml up -d --wait",
+    "data:down": "docker compose -f compose.data.yaml down",
+    "data:status": "docker compose -f compose.data.yaml ps"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",

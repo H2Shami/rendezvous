@@ -109,6 +109,26 @@ The deterministic client in `test/http-client.ts` is testing infrastructure, not
 
 ## Storage and deployment
 
+For local Docker data stores, set `POSTGRES_PASSWORD` in `.env`, then run
+`npm run data:up`. This starts PostgreSQL 17 with a health check
+and persistent Docker volumes. Ports bind to localhost only. `npm run data:status`
+shows their status; `npm run data:down` stops them without deleting data.
+
+Connect DBeaver to PostgreSQL at `127.0.0.1:55432`, database/user `rendezvous`,
+using `POSTGRES_PASSWORD` from `.env`.
+Override `POSTGRES_PORT` if needed.
+
+Set `DATABASE_URL=postgresql://rendezvous:URL_ENCODED_PASSWORD@127.0.0.1:55432/rendezvous`
+in `.env` and restart `npm run dev:backend` to use Docker PostgreSQL. The server
+creates/upgrades its tables on startup. This selects a separate database;
+existing PGlite rooms are not automatically copied. Keep the original `.data`
+directory if you need those rooms. The hashing pepper still lives in
+`DATA_DIR/server-secrets.json` and must be preserved alongside database backups.
+
+The relay authenticates against PostgreSQL without an authorization cache.
+Invite use limits, participant revocation, and room state remain transactional
+database checks.
+
 Copy `.env.example` for settings. Without DATABASE_URL, persistent PGlite data and the server's token-hashing pepper live in DATA_DIR. Keep that directory private and durable. A second server using the same directory refuses startup. DATABASE_URL selects native PostgreSQL.
 
 Docker Compose runs Express, Next.js and PostgreSQL; set `FRONTEND_DOMAIN` and `POSTGRES_PASSWORD`, then `docker compose up --build`. Only Next.js needs a public HTTPS/custom domain. Run one Express instance: wakeups are in-process notifications, with PostgreSQL as the only message store. No Redis or distributed bus is involved.
