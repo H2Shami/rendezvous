@@ -1,6 +1,7 @@
 config:
   aws:region: us-east-2
   aws:profile: rendezvous
+  rendezvous:enableDbTunnel: "true"
   rendezvous:domain: dev.userendezvous.com
   rendezvous:hostedZoneId: Z02297441UMB16BS5O67U
   rendezvous:dbInstanceClass: db.t4g.micro

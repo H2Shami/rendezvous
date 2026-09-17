@@ -3,10 +3,10 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import LightTrails from "./light-trails";
 
-// Keep the initial invitation in memory across navigation, never in browser storage.
+// Keep the current invitation and its ID in memory across navigation, never in browser storage.
 const InvitationContext = createContext<{
-  invitation: { session: string; url: string } | null;
-  setInvitation: (invitation: { session: string; url: string }) => void;
+  invitation: { session: string; url: string; id: string } | null;
+  setInvitation: (invitation: { session: string; url: string; id: string }) => void;
 } | null>(null);
 
 export function useInvitation() {
@@ -19,6 +19,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const [invitation, setInvitation] = useState<{
     session: string;
     url: string;
+    id: string;
   } | null>(null);
   return (
     <InvitationContext.Provider value={{ invitation, setInvitation }}>

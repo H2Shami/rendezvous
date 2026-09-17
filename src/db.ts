@@ -75,7 +75,7 @@ export async function openDatabase({
       );
       await tx.exec(
         await readFile(
-          new URL("../migrations/004_single_use_invites.sql", import.meta.url),
+          new URL("../migrations/005_reusable_invites.sql", import.meta.url),
           "utf8",
         ),
       );

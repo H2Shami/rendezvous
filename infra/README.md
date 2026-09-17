@@ -152,6 +152,10 @@ ECR images are retained for rollback and require eventual cleanup.
 
 ## Operations and recovery
 
+For local access to the private dev database, see [Session Manager database access](DB-ACCESS.md).
+Dev enables a small EC2 bridge; production leaves it disabled. Stop the bridge
+when idle using `npm --prefix infra run db:tunnel:stop` from the repository root.
+
 Container logs are retained for 30 days in prod and seven in dev. Inspect them using the `logGroupName`
 output; ECS cluster/service and RDS identifiers are also exported. Set up uptime
 and error alerts, database capacity alarms, and a billing budget before launch.

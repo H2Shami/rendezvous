@@ -128,6 +128,7 @@ export async function api<T>(
 export interface CreatedSession {
   session_id: string;
   owner_token: string;
+  invite_id: string;
   invite_url: string;
 }
 export const createSession = (capacity: number) =>
@@ -149,7 +150,7 @@ export const readMessages = (
 export const sendMessage = (owner: Owner, content: string) =>
   api(owner, "/messages", "POST", { content });
 export const createInvite = (owner: Owner) =>
-  api<{ invite_url: string }>(owner, "/invites", "POST", { max_uses: 1 });
+  api<{ invite_id: string; invite_url: string }>(owner, "/invites", "POST", {});
 export const closeSession = (owner: Owner) => api(owner, "/close", "POST", {});
 export const revokeParticipant = (owner: Owner, id: string) =>
   api(owner, `/participants/${encodeURIComponent(id)}`, "DELETE");

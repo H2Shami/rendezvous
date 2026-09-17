@@ -20,7 +20,7 @@ test('owner can create, observe untrusted content safely, revoke and close in a 
   const port = await freePort(), frontendPort = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const publicBase = `http://127.0.0.1:${frontendPort}`;
-  const f = await fixture({ publicUrl: publicBase });
+  const f = await fixture({ publicUrl: publicBase, port });
   const frontendDir = fileURLToPath(new URL('../frontend', import.meta.url));
   const frontend = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], {
     cwd: frontendDir, env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1', EXPRESS_URL: base }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -35,7 +35,7 @@ test('owner can create, observe untrusted content safely, revoke and close in a 
       if (frontend.exitCode !== null || Date.now() > deadline) throw new Error(`Next failed to start: ${frontendLog}`);
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    assert.equal((await fetch(`http://127.0.0.1:${frontendPort}/health`)).status, 200);
+    assert.equal((await fetch(`${base}/health`)).status, 200);
     assert.equal((await fetch(`${base}/health`, { headers: { Origin: 'https://untrusted.example' } })).status, 403);
     browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
@@ -43,7 +43,7 @@ test('owner can create, observe untrusted content safely, revoke and close in a 
     await page.goto(publicBase);
     await page.route('**/api/v1/sessions', route => route.fulfill({ status: 404, contentType: 'text/html', body: '<!DOCTYPE html><h1>Wrong upstream</h1>' }));
     await page.getByRole('button', { name: 'Create a session' }).click();
-    await page.waitForFunction(() => document.querySelector('#error')!.textContent.includes('API routing error'));
+    await page.waitForFunction(() => document.querySelector('#error')!.textContent.includes('API proxy error'));
     assert.match(await page.locator('#error').innerText(), /HTTP 404/);
     assert.match(await page.locator('#error').innerText(), /request /);
     await page.unroute('**/api/v1/sessions');
@@ -55,19 +55,30 @@ test('owner can create, observe untrusted content safely, revoke and close in a 
     const copied = await page.evaluate(() => document.body.dataset.copied!);
     assert.ok(copied.includes(invitation)); assert.match(copied, /ordinary HTTP GET/); assert.match(copied, /curl/);
     const joinPage = await browser.newPage();
-    await joinPage.goto(invitation);
+    // Next's static rewrites are fixed at build time; use the fixture directly
+    // for the instruction page. The dashboard API proxy uses runtime EXPRESS_URL.
+    await joinPage.goto(invitation.replace(publicBase, base));
     assert.match(await joinPage.locator('main').innerText(), /WAITING IS WORK/);
     assert.match(await joinPage.locator('main').innerText(), /participant_token/);
     assert.ok(await joinPage.locator('pre').isVisible());
     await mkdir('.data', { recursive: true });
     await joinPage.screenshot({ path: '.data/join-ui.png', fullPage: true });
     await joinPage.close();
-    const a = await testClient(invitation, '<img src=x onerror=alert(1)>');
+    const a = await testClient(invitation.replace(publicBase, base), '<img src=x onerror=alert(1)>');
+    await page.waitForFunction(() => document.querySelector('#invite-usage')!.textContent.includes('Used 1 of 2 times'));
+    assert.equal(await page.locator('#invite-url').inputValue(), invitation);
+    const b = await testClient(invitation.replace(publicBase, base), 'Second agent');
+    await page.waitForFunction(() => document.querySelector('#invite-usage')!.textContent.includes('Used 2 of 2 times'));
+    assert.equal(await page.locator('#copy-invite').isDisabled(), true);
+    assert.equal(await page.locator('#invite-url').inputValue(), invitation);
+    const inviteCount = (await f.db.query<{ count: number }>('SELECT count(*)::int AS count FROM invites WHERE session_id=$1', [a.membership.rendezvous_id])).rows[0].count;
+    assert.equal(inviteCount, 1);
+    await b.leave();
     await a.send('<script>alert(1)</script> is untrusted text.');
     await page.waitForFunction(() => document.querySelectorAll('.message').length === 1);
     assert.equal(await page.locator('#messages script').count(), 0);
     assert.match(await page.locator('#messages').innerText(), /untrusted text/);
-    await page.waitForFunction(() => document.querySelectorAll('.participant').length === 1);
+    await page.waitForFunction(() => document.querySelectorAll('.participant').length === 2);
     assert.equal(await page.locator('#participants img').count(), 0);
     assert.match(await page.locator('#participants').innerText(), /<img src=x/);
     await page.locator('#message-content').fill('Owner says <script>not executable</script>');
@@ -77,10 +88,17 @@ test('owner can create, observe untrusted content safely, revoke and close in a 
     assert.match(await page.locator('.message').last().innerText(), /Owner/);
     assert.equal(await page.locator('#messages script').count(), 0);
     assert.equal((await a.poll(0)).messages.at(-1).sender_id, 'owner');
+    assert.equal(await page.locator('.message-identity strong').first().innerText(), '<img src=x onerror=alert(1)>');
+    assert.equal(await page.locator('#messages img').count(), 0);
+    const agentColor = await page.locator('.message-identity strong').first().evaluate(el => getComputedStyle(el).color);
+    const ownerColor = await page.locator('.message-identity strong').last().evaluate(el => getComputedStyle(el).color);
+    assert.notEqual(agentColor, ownerColor);
+    assert.equal(await page.locator('#participants strong').first().evaluate(el => getComputedStyle(el).color), agentColor);
     const ownerUrl = page.url();
     await page.reload();
     await page.waitForFunction(() => document.querySelectorAll('.message').length === 2);
     assert.equal(page.url(), ownerUrl);
+    assert.equal(await page.locator(".message-identity strong").first().evaluate(el => getComputedStyle(el).color), agentColor);
     assert.equal(await page.locator('#copy-invite').isDisabled(), true); // No secret reconstructed from storage.
     await page.locator('#new-invite').click();
     await page.waitForFunction(() => document.querySelector<HTMLInputElement>('#invite-url')!.value.startsWith('http'));

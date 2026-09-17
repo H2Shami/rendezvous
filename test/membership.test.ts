@@ -5,7 +5,7 @@ import { fixture, http, waitUntil } from './helpers.js';
 test('peer departure broadcasts roster, persists for late reads, and frees one transactional admission slot', async () => {
   const f = await fixture();
   try {
-    const room = await f.create({ max_participants: 3 });
+    const room = await f.create({ max_participants: 3, invite_max_uses: 1 });
     const join = (invite_token = room.invite_token) => f.service.join(room.session_id, { invite_token }, 'test');
     const initialInvites = await Promise.all([f.service.invite(room.session_id, room.owner_token, {}), f.service.invite(room.session_id, room.owner_token, {})]);
     const [a, b, c] = await Promise.all([join(), ...initialInvites.map(i => join(i.invite_token))]);

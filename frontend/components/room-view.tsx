@@ -1,6 +1,6 @@
 "use client";
 import RoomMembers from "./room-members";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   createInvite,
   closeSession,
@@ -16,18 +16,30 @@ import { errorText, isTerminal } from "../lib/room";
 export default function RoomView({
   owner,
   invite,
+  inviteId,
   setInvite,
 }: {
   owner: Owner;
   invite: string;
-  setInvite: (value: string) => void;
+  inviteId: string;
+  setInvite: (value: string, id: string) => void;
 }) {
   const { room, messages, error, setError, pollError, refresh } =
     useRoom(owner);
   const [mutating, setMutating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const actionInFlight = useRef(false);
+  const ended = isTerminal(room?.status);
+  const full = !!room &&
+    room.participants.filter(p => !p.left_at && !p.revoked_at).length >= room.max_participants;
+  const currentInvite = room?.invites?.find(i => i.id === inviteId);
+  const consumed = !!currentInvite && currentInvite.use_count >= currentInvite.max_uses;
+  const unavailable = consumed || !!currentInvite?.revoked_at;
+  const canCopy = !!invite && !unavailable && !ended && !full && !mutating;
+
   async function runRoomAction(action: () => Promise<unknown>) {
-    if (mutating) return;
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
     setMutating(true);
     setError("");
     try {
@@ -36,17 +48,19 @@ export default function RoomView({
     } catch (e) {
       setError(errorText(e));
     } finally {
+      actionInFlight.current = false;
       setMutating(false);
     }
   }
   async function newInvite() {
     await runRoomAction(async () => {
       const result = await createInvite(owner);
-      setInvite(result.invite_url);
+      setInvite(result.invite_url, result.invite_id);
       setCopied(false);
     });
   }
   async function copy() {
+    if (!canCopy) return;
     try {
       await navigator.clipboard.writeText(invitationText(invite));
       setCopied(true);
@@ -54,7 +68,6 @@ export default function RoomView({
       setError(errorText(e));
     }
   }
-  const ended = isTerminal(room?.status);
   return (
     <section id="room">
       <div className="room-heading">
@@ -74,11 +87,11 @@ export default function RoomView({
           <strong>Invite your agents</strong>
           <p>
             Copy an invitation with the link and HTTP instruction-fetching
-            directions. Each link admits one agent. Create a new invite below for
-            each additional agent, and give each agent its task too.
+            directions. Share the same link with your agents until its uses run out.
+            Give each agent its task too.
           </p>
         </div>
-        <button id="copy-invite" disabled={!invite} onClick={copy}>
+        <button id="copy-invite" disabled={!canCopy} onClick={copy}>
           {copied ? "Copied" : "Copy invite"}
         </button>
       </div>
@@ -87,10 +100,13 @@ export default function RoomView({
         aria-label="Invitation URL"
         readOnly
         value={
-          invite ||
-          "Create a new invite below if you no longer have the original."
+          invite || "Create a new invite below if you no longer have the original."
         }
       />
+      <p id="invite-usage" className="muted" aria-live="polite">
+        {currentInvite && `Used ${currentInvite.use_count} of ${currentInvite.max_uses} times`}
+        {currentInvite?.revoked_at ? " · Revoked" : consumed ? " · Exhausted — create a new invite below" : full ? " · Room is full" : ""}
+      </p>
       <p className="muted">
         Save this owner page’s full URL privately. It grants access to
         participant information, messaging and room controls.
@@ -108,6 +124,7 @@ export default function RoomView({
         <Conversation
           owner={owner}
           messages={messages}
+          participants={room?.participants ?? []}
           disabled={!room || ended}
           pollError={pollError}
         />

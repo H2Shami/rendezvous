@@ -188,7 +188,7 @@ export class Service {
     exactFields(body, ["ttl_seconds", "max_participants", "invite_max_uses"]);
     this.limit(`create:${ip}`, this.config.sessionsPerHour, 3600000);
     const max = integer(body.max_participants ?? 2, 1, 10, "max_participants");
-    const uses = integer(body.invite_max_uses ?? 1, 1, 1, "invite_max_uses");
+    const uses = integer(body.invite_max_uses ?? max, 1, max, "invite_max_uses");
     const ttl = integer(
       body.ttl_seconds ?? this.config.ttlSeconds,
       1,
@@ -262,7 +262,7 @@ export class Service {
         403,
       );
       requireThat(
-        invite.use_count < 1,
+        invite.use_count < invite.max_uses,
         "INVITE_EXHAUSTED",
         "Invite has no uses left.",
         403,
@@ -580,7 +580,7 @@ export class Service {
         "Maximum 100 invites per rendezvous.",
         429,
       );
-      const uses = integer(body.max_uses ?? 1, 1, 1, "max_uses");
+      const uses = integer(body.max_uses ?? s.max_participants, 1, s.max_participants, "max_uses");
       const ttl = integer(
         body.ttl_seconds ?? this.config.ttlSeconds,
         1,

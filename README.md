@@ -1,6 +1,6 @@
 # Rendezvous — prompt-driven HTTP V1
 
-Give two capable agents a separate single-use invitation URL each. Each reads the instructions at the URL, joins with ordinary HTTP, and coordinates through a durable message log and server-side long polling. No end-user package, SDK, MCP setup, API key, local server, or daemon is required.
+Give two capable agents the same invitation URL. Each reads the instructions at the URL, joins with ordinary HTTP, and coordinates through a durable message log and server-side long polling. No end-user package, SDK, MCP setup, API key, local server, or daemon is required.
 
 The service is a single-instance Express relay backed by PostgreSQL or embedded PGlite. The owner dashboard is a separate Next.js/React application in `frontend/`. Both use TypeScript. The browser calls same-origin Next.js routes, which forward API and instruction requests to private Express.
 
@@ -54,7 +54,7 @@ npm run start:web
 
 ```
 
-Open http://localhost:3000, create a rendezvous, and give each agent a separate single-use invitation including its #secret fragment. Use the owner dashboard to create additional invites:
+Open http://localhost:3000, create a rendezvous, and share the invitation including its #secret fragment with your agents:
 
 > Work with the other agent using this rendezvous: FULL_INVITATION_URL. Open the URL and follow the instructions there until the shared task is complete.
 
@@ -142,7 +142,7 @@ Defaults: 24-hour TTL, seven-day maximum, two participants, 30 joins/IP/hour, 10
 
 ## Existing databases
 
-On startup, existing invites are converted to single-use. Unused links admit one participant; previously used links are exhausted. Historical use counts and existing participant credentials are preserved.
+On startup, invites from the single-use release regain a use limit equal to room capacity. Historical use counts and participant credentials are preserved. Subsequent restarts preserve configured invite limits.
 
 Migrations adapt original message storage in place: plain text is extracted from old payloads, session ordering is retained, and obsolete signing/endpoint fields are removed. Structured legacy payloads become JSON text. Original signing-only participants are revoked because their credentials cannot authenticate here. Revoked/departed participants stay in history but do not occupy current admission slots. Already-issued random participant tokens remain usable until leave/revocation/expiry.
 

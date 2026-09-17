@@ -47,15 +47,38 @@ test('original signed-message storage migrates without losing message contents o
     assert.deepEqual(JSON.parse(page.messages[1].content), { custom: true });
     const info = await service.inspect(id, raw); assert.equal(info.participants[0].display_name, 'Legacy'); assert.ok(info.participants[0].revoked_at);
     const migratedInvites = (await db.query<{ max_uses: number; use_count: number }>('SELECT max_uses,use_count FROM invites WHERE session_id=$1 ORDER BY use_count', [id])).rows;
-    assert.deepEqual(migratedInvites, [{ max_uses: 1, use_count: 0 }, { max_uses: 1, use_count: 2 }]);
+    assert.deepEqual(migratedInvites, [{ max_uses: 3, use_count: 0 }, { max_uses: 3, use_count: 2 }]);
+    const lastUse = await service.join(id, { invite_token: usedInvite }, 'test');
+    await service.leave(id, lastUse.participant_token);
     await assert.rejects(service.join(id, { invite_token: usedInvite }, 'test'), { code: 'INVITE_EXHAUSTED' });
     const admitted = await service.join(id, { invite_token: unusedInvite }, 'test');
     await service.leave(id, admitted.participant_token);
-    await assert.rejects(service.join(id, { invite_token: unusedInvite }, 'test'), { code: 'INVITE_EXHAUSTED' });
-    await assert.rejects(db.query('UPDATE invites SET max_uses=2 WHERE session_id=$1', [id]));
+
+    await assert.rejects(db.query('UPDATE invites SET max_uses=11 WHERE session_id=$1', [id]));
     const invitation = await service.invite(id, raw, {}); const joined = await service.join(id, { invite_token: invitation.invite_token }, 'test');
     assert.equal((await service.send(id, joined.participant_token, { content: 'new text' })).sequence, 3);
     const columns = (await db.query<{ column_name: string }>("SELECT column_name FROM information_schema.columns WHERE table_name IN ('participants','messages')")).rows.map(r => r.column_name);
     for (const obsolete of ['public_key', 'last_sequence', 'envelope', 'envelope_hash', 'message_offset', 'a2a_endpoint']) assert.ok(!columns.includes(obsolete));
+  } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('single-use databases regain reusable invites once and preserve later limits on restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'rendezvous-reusable-'));
+  let db = await openDatabase({ dataDir: dir });
+  const auth = security({ pepper: secret() });
+  try {
+    const service = new Service(db, auth, { logger: () => {} });
+    const room = await service.create({ max_participants: 3 }, 'test');
+    await service.join(room.session_id, { invite_token: room.invite_token }, 'test');
+    await db.exec(await readFile(new URL('../migrations/004_single_use_invites.sql', import.meta.url), 'utf8'));
+    await db.close(); db = await openDatabase({ dataDir: dir });
+    const restored = new Service(db, auth, { logger: () => {} });
+    const invite = (await restored.inspect(room.session_id, room.owner_token)).invites![0];
+    assert.equal(invite.max_uses, 3); assert.equal(invite.use_count, 1);
+    await restored.join(room.session_id, { invite_token: room.invite_token }, 'second');
+    const limited = await restored.invite(room.session_id, room.owner_token, { max_uses: 1 });
+    await db.close(); db = await openDatabase({ dataDir: dir });
+    const limits = (await db.query<{ max_uses: number }>('SELECT max_uses FROM invites WHERE id=$1', [limited.invite_id])).rows;
+    assert.equal(limits[0].max_uses, 1);
   } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
 });

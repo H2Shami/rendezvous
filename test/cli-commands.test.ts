@@ -56,7 +56,9 @@ test('create saves private credentials, supports JSON, and produces a usable inv
     assert.equal((await stat(output)).mode & 0o777, 0o600);
     const invite = new URL(data.invite_url);
     await f.service.join(data.session_id, { invite_token: invite.hash.slice(1) }, 'test-first');
-    await assert.rejects(f.service.join(data.session_id, { invite_token: invite.hash.slice(1) }, 'test-second'), { code: 'INVITE_EXHAUSTED' });
+    await f.service.join(data.session_id, { invite_token: invite.hash.slice(1) }, 'test-second');
+    await f.service.join(data.session_id, { invite_token: invite.hash.slice(1) }, 'test-third');
+    await assert.rejects(f.service.join(data.session_id, { invite_token: invite.hash.slice(1) }, 'test-fourth'), { code: 'INVITE_EXHAUSTED' });
     assert.doesNotMatch(result.stderr, new RegExp(invite.hash.slice(1)));
     const previous = await readFile(output, 'utf8');
     const duplicate = await cli(['create', '--server', f.base, '--output', output]);

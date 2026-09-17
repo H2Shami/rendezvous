@@ -34,7 +34,8 @@ export default function RoomPage({ sessionId }: { sessionId: string }) {
       key={`${owner.session}.${owner.token}`}
       owner={owner}
       invite={invitation?.session === sessionId ? invitation.url : ""}
-      setInvite={(url) => setInvitation({ session: sessionId, url })}
+      inviteId={invitation?.session === sessionId ? invitation.id : ""}
+      setInvite={(url, id) => setInvitation({ session: sessionId, url, id })}
     />
   );
 }

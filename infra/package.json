@@ -3,7 +3,9 @@
   "private": true,
   "engines": { "node": ">=22" },
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "db:tunnel": "node db-tunnel.mjs",
+    "db:tunnel:stop": "node db-tunnel.mjs --stop"
   },
   "dependencies": {
     "@pulumi/aws": "^7.0.0",

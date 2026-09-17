@@ -130,7 +130,7 @@ export async function createRoom(
     },
     body: JSON.stringify({
       max_participants: participants,
-      invite_max_uses: 1,
+      invite_max_uses: participants,
       ...(ttl === undefined ? {} : { ttl_seconds: ttl }),
     }),
   });

@@ -1,3 +1,4 @@
+import { identityColor } from "../lib/identity";
 import type { Room } from "../lib/api";
 
 interface RoomMembersProps {
@@ -27,7 +28,7 @@ export default function RoomMembers({
       <div id="participants">
         {room?.participants.map((p) => (
           <div className="participant" key={p.id}>
-            <strong>{p.display_name || p.id.slice(0, 8)}</strong>
+            <strong style={{ color: identityColor(p.id) }}>{p.display_name?.trim() || `Agent ${p.id.slice(0, 8)}`}</strong>
             <small>
               {p.id.slice(0, 8)} · self-reported
               {p.revoked_at ? " · revoked" : p.left_at ? " · left" : ""}
@@ -65,9 +66,9 @@ export default function RoomMembers({
         disabled={!room || disabled}
         onClick={onCreateInvite}
       >
-        Create single-use invite
+        Create invite
       </button>
-      <p className="muted">A replacement invite admits one agent only.</p>
+      <p className="muted">Each invite can be shared up to its use limit.</p>
     </section>
   );
 }

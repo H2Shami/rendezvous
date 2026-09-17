@@ -63,10 +63,39 @@ const taskSg = new aws.ec2.SecurityGroup('task-sg', {
   ingress: [{ protocol: 'tcp', fromPort: 3000, toPort: 3000, securityGroups: [albSg.id] }],
   egress: [{ protocol: '-1', fromPort: 0, toPort: 0, cidrBlocks: ['0.0.0.0/0'] }], tags,
 });
+const tunnelSg = config.getBoolean('enableDbTunnel') ? new aws.ec2.SecurityGroup('db-tunnel-sg', {
+  vpcId: vpc.id, ingress: [],
+  egress: [
+    { protocol: 'tcp', fromPort: 443, toPort: 443, cidrBlocks: ['0.0.0.0/0'] },
+    { protocol: 'tcp', fromPort: 5432, toPort: 5432, cidrBlocks: dbSubnets.map(s => s.cidrBlock) },
+  ], tags,
+}) : undefined;
 const dbSg = new aws.ec2.SecurityGroup('database-sg', {
   vpcId: vpc.id,
-  ingress: [{ protocol: 'tcp', fromPort: 5432, toPort: 5432, securityGroups: [taskSg.id] }], tags,
+  ingress: [{ protocol: 'tcp', fromPort: 5432, toPort: 5432, securityGroups: [taskSg.id, ...(tunnelSg ? [tunnelSg.id] : [])] }], tags,
 });
+let tunnelInstance: aws.ec2.Instance | undefined;
+if (tunnelSg) {
+  const role = new aws.iam.Role('db-tunnel-role', {
+    assumeRolePolicy: JSON.stringify({ Version: '2012-10-17', Statement: [{
+      Effect: 'Allow', Principal: { Service: 'ec2.amazonaws.com' }, Action: 'sts:AssumeRole',
+    }] }), tags,
+  });
+  const policy = new aws.iam.RolePolicyAttachment('db-tunnel-ssm-policy', {
+    role: role.name, policyArn: 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore',
+  });
+  const profile = new aws.iam.InstanceProfile('db-tunnel-profile', { role: role.name, tags });
+  const ami = aws.ssm.getParameterOutput({ name: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64' });
+  tunnelInstance = new aws.ec2.Instance('db-tunnel', {
+    ami: ami.value, instanceType: 't4g.nano', subnetId: publicSubnets[0].id,
+    associatePublicIpAddress: true, vpcSecurityGroupIds: [tunnelSg.id], iamInstanceProfile: profile.name,
+    metadataOptions: { httpTokens: 'required', httpPutResponseHopLimit: 1 },
+    rootBlockDevice: { encrypted: true, volumeType: 'gp3', volumeSize: 8, deleteOnTermination: true },
+    creditSpecification: { cpuCredits: 'standard' },
+    userData: '#!/bin/bash\nset -eu\nsystemctl enable --now amazon-ssm-agent\n',
+    tags: { ...tags, Name: `${pulumi.getProject()}-${pulumi.getStack()}-db-tunnel` },
+  }, { dependsOn: [policy, publicRoutes], ignoreChanges: ['ami'] });
+}
 const subnetGroup = new aws.rds.SubnetGroup('database-subnets', { subnetIds: dbSubnets.map(s => s.id), tags });
 const password = new random.RandomPassword('database-password', { length: 40, special: false }, { protect: true });
 const pepper = new random.RandomPassword('token-pepper', { length: 64, special: false }, { protect: true });
@@ -203,3 +232,5 @@ export const clusterName = cluster.name;
 export const serviceName = service.name;
 export const databaseIdentifier = database.identifier;
 export const logGroupName = logs.name;
+export const dbTunnelInstanceId = tunnelInstance?.id;
+export const databaseHost = database.address;

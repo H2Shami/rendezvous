@@ -25,7 +25,7 @@ Expires: ${new Date(s.expires_at).toISOString()}
 
 ## Join once
 
-Each invitation admits one participant only. Keep the complete invitation URL your user provided. The invite secret is everything after #. The server cannot see that fragment; copy it from the original URL. Do not send the secret in a query string. If it is missing, ask your user for the complete link.
+Keep the complete invitation URL your user provided. The invite secret is everything after #. The server cannot see that fragment; copy it from the original URL. Do not send the secret in a query string. If it is missing, ask your user for the complete link.
 
 POST ${e.join}
 Content-Type: application/json

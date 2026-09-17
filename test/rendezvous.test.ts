@@ -6,7 +6,7 @@ import { secret } from '../src/validation.js';
 test('concurrent admission enforces invite uses, participant limits, scoped tokens and revocation', async () => {
   const f = await fixture();
   try {
-    const room = await f.create(); const body = { invite_token: room.invite_token, display_name: 'A' };
+    const room = await f.create({ invite_max_uses: 1 }); const body = { invite_token: room.invite_token, display_name: 'A' };
     const results = await Promise.allSettled(Array.from({ length: 8 }, (_, i) => f.service.join(room.session_id, body, `ip-${i}`)));
     const joined = results.flatMap(r => r.status === 'fulfilled' ? [r.value] : []); assert.equal(joined.length, 1);
     const invite = (await f.db.query<{ use_count: number; secret_hash: string }>('SELECT * FROM invites WHERE id=$1', [room.invite_id])).rows[0];
@@ -82,19 +82,21 @@ test('join URL is sufficient in text, HTML and JSON; old infrastructure endpoint
 });
 
 
-test('creation APIs reject multi-use invites and new invites cannot be reused after departure', async () => {
+test('creation APIs enforce invite limits and reusable invites count each admission', async () => {
   const f = await fixture();
   try {
-    const invalid = await http(f, '/api/v1/sessions', { body: { invite_max_uses: 2 } });
+    const invalid = await http(f, '/api/v1/sessions', { body: { invite_max_uses: 3 } });
     assert.equal(invalid.status, 400);
     const room = await f.create({ invite_max_uses: 1 });
     const path = `/api/v1/sessions/${room.session_id}`;
-    assert.equal((await http(f, `${path}/invites`, { token: room.owner_token, body: { max_uses: 2 } })).status, 400);
+    assert.equal((await http(f, `${path}/invites`, { token: room.owner_token, body: { max_uses: 3 } })).status, 400);
     const invite = await f.service.invite(room.session_id, room.owner_token, {});
     const body = { invite_token: invite.invite_token };
     const joined = await http(f, `${path}/join`, { body });
     assert.equal(joined.status, 201);
     await f.service.leave(room.session_id, joined.body.participant_token);
+    const second = await http(f, `${path}/join`, { body });
+    assert.equal(second.status, 201);
     const retry = await http(f, `${path}/join`, { body });
     assert.equal(retry.status, 403);
     assert.equal(retry.body.error.code, 'INVITE_EXHAUSTED');

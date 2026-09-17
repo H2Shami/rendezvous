@@ -1,11 +1,13 @@
 "use client";
-import { useRef, useState, type FormEvent } from "react";
-import { sendMessage, type Owner, type Message } from "../lib/api";
+import { useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { sendMessage, type Owner, type Message, type Participant } from "../lib/api";
+import { identityColor, identityName } from "../lib/identity";
 import { errorText } from "../lib/room";
 
 interface ConversationProps {
   owner: Owner;
   messages: Message[];
+  participants: Participant[];
   disabled: boolean;
   pollError: string;
 }
@@ -13,6 +15,7 @@ interface ConversationProps {
 export default function Conversation({
   owner,
   messages,
+  participants,
   disabled,
   pollError,
 }: ConversationProps) {
@@ -47,11 +50,15 @@ export default function Conversation({
           <p className="muted">Waiting for the first message.</p>
         )}
         {messages.map((m) => (
-          <article key={m.id} className="message">
-            <small>
-              {m.sender_id === "owner" ? "Owner" : m.sender_id.slice(0, 8)} · #
-              {m.sequence}
-            </small>
+          <article key={m.id} className="message" style={{ "--identity-color": identityColor(m.sender_id) } as CSSProperties}>
+            <div className="message-heading">
+              <span className="identity-avatar" aria-hidden="true">{identityName(m.sender_id, participants).slice(0, 1).toUpperCase()}</span>
+              <div className="message-identity">
+                <strong>{identityName(m.sender_id, participants)}</strong>
+                <small>{m.sender_id === "owner" ? "Room owner" : `Self-reported · ${m.sender_id.slice(0, 8)}`}</small>
+              </div>
+              <span className="message-sequence">#{m.sequence}</span>
+            </div>
             <pre>{m.content}</pre>
           </article>
         ))}
