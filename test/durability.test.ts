@@ -28,9 +28,13 @@ test('original signed-message storage migrates without losing message contents o
   const legacy = new PGlite(dir); await legacy.waitReady;
   const id = uuid(), p = uuid(), m = uuid(), raw = secret();
   const auth = security({ pepper: secret() });
+  const unusedInvite = secret(), usedInvite = secret();
   try {
     await legacy.exec(await readFile(new URL('./fixtures/legacy.sql', import.meta.url), 'utf8'));
     await legacy.query("INSERT INTO sessions(id,owner_hash,expires_at,max_participants,next_message_offset) VALUES($1,$2,now()+interval '1 day',2,3)", [id, auth.digest(raw)]);
+    for (const [token, uses] of [[unusedInvite, 0], [usedInvite, 2]] as const) {
+      await legacy.query('INSERT INTO invites(id,session_id,secret_hash,max_uses,use_count,expires_at) VALUES($1,$2,$3,3,$4,now()+interval \'1 day\')', [uuid(), id, auth.digest(token), uses]);
+    }
     await legacy.query("INSERT INTO participants(id,session_id,public_key,metadata_json) VALUES($1,$2,'legacy-key',$3)", [p, id, JSON.stringify({ name: 'Legacy' })]);
     await legacy.query('INSERT INTO messages(id,session_id,sender_participant_id,message_offset,sequence,envelope,envelope_hash) VALUES($1,$2,$3,1,1,$4,$5)', [m, id, p, JSON.stringify({ payload: { text: 'preserved text' } }), 'legacy-hash']);
     await legacy.query('INSERT INTO messages(id,session_id,sender_participant_id,message_offset,sequence,envelope,envelope_hash) VALUES($1,$2,$3,2,2,$4,$5)', [uuid(), id, p, JSON.stringify({ payload: { custom: true } }), 'legacy-hash-2']);
@@ -42,6 +46,13 @@ test('original signed-message storage migrates without losing message contents o
     assert.deepEqual(page.messages.map(m => m.sequence), [1, 2]); assert.equal(page.messages[0].content, 'preserved text');
     assert.deepEqual(JSON.parse(page.messages[1].content), { custom: true });
     const info = await service.inspect(id, raw); assert.equal(info.participants[0].display_name, 'Legacy'); assert.ok(info.participants[0].revoked_at);
+    const migratedInvites = (await db.query<{ max_uses: number; use_count: number }>('SELECT max_uses,use_count FROM invites WHERE session_id=$1 ORDER BY use_count', [id])).rows;
+    assert.deepEqual(migratedInvites, [{ max_uses: 1, use_count: 0 }, { max_uses: 1, use_count: 2 }]);
+    await assert.rejects(service.join(id, { invite_token: usedInvite }, 'test'), { code: 'INVITE_EXHAUSTED' });
+    const admitted = await service.join(id, { invite_token: unusedInvite }, 'test');
+    await service.leave(id, admitted.participant_token);
+    await assert.rejects(service.join(id, { invite_token: unusedInvite }, 'test'), { code: 'INVITE_EXHAUSTED' });
+    await assert.rejects(db.query('UPDATE invites SET max_uses=2 WHERE session_id=$1', [id]));
     const invitation = await service.invite(id, raw, {}); const joined = await service.join(id, { invite_token: invitation.invite_token }, 'test');
     assert.equal((await service.send(id, joined.participant_token, { content: 'new text' })).sequence, 3);
     const columns = (await db.query<{ column_name: string }>("SELECT column_name FROM information_schema.columns WHERE table_name IN ('participants','messages')")).rows.map(r => r.column_name);

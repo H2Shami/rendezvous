@@ -11,7 +11,8 @@ test('two plain HTTP clients coordinate, keep waiting on timeout, and retrieve l
     const empty = await a.poll(1); assert.equal(empty.session_status, 'waiting'); assert.deepEqual(empty.messages, []);
     const waiting = a.poll(60);
     await waitUntil(() => (f.service.waiters.get(room.session_id)?.size || 0) === 1);
-    const b = await testClient(invitation, 'Bob');
+    const secondInvite = await f.service.invite(room.session_id, room.owner_token, {});
+    const b = await testClient(`${f.base}/join/${room.session_id}#${secondInvite.invite_token}`, 'Bob');
     await b.send('Could Alice meet Thursday?');
     let first = await waiting; assert.equal(first.session_status, 'active');
     if (!first.messages.length) first = await a.poll(60); // Joining itself can wake a poll.
@@ -37,7 +38,8 @@ test('concurrent sends have contiguous session ordering and paginated reads do n
   try {
     const room = await f.create();
     const a = await f.service.join(room.session_id, { invite_token: room.invite_token }, 'a');
-    const b = await f.service.join(room.session_id, { invite_token: room.invite_token }, 'b');
+    const secondInvite = await f.service.invite(room.session_id, room.owner_token, {});
+    const b = await f.service.join(room.session_id, { invite_token: secondInvite.invite_token }, 'b');
     const sent = await Promise.all(Array.from({ length: 120 }, (_, i) => f.service.send(room.session_id, i % 2 ? a.participant_token : b.participant_token, { content: `message ${i}` })));
     assert.deepEqual(sent.map(m => m.sequence).sort((a, b) => a - b), Array.from({ length: 120 }, (_, i) => i + 1));
     const first = await f.service.messages(room.session_id, a.participant_token, 0, 0);

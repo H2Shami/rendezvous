@@ -7,7 +7,8 @@ test('peer departure broadcasts roster, persists for late reads, and frees one t
   try {
     const room = await f.create({ max_participants: 3 });
     const join = (invite_token = room.invite_token) => f.service.join(room.session_id, { invite_token }, 'test');
-    const [a, b, c] = await Promise.all([join(), join(), join()]);
+    const initialInvites = await Promise.all([f.service.invite(room.session_id, room.owner_token, {}), f.service.invite(room.session_id, room.owner_token, {})]);
+    const [a, b, c] = await Promise.all([join(), ...initialInvites.map(i => join(i.invite_token))]);
     const path = `/api/v1/sessions/${room.session_id}/messages?after=0&wait=60`;
     const polls = [a, b].map(p => http(f, path, { token: p.participant_token }));
     await waitUntil(() => f.service.waiters.get(room.session_id)?.size === 2);
@@ -23,8 +24,8 @@ test('peer departure broadcasts roster, persists for late reads, and frees one t
     assert.ok(late.participants.find(p => p.id === c.participant_id)?.left_at);
     await assert.rejects(join(), { code: 'INVITE_EXHAUSTED' });
     await assert.rejects(f.service.send(room.session_id, c.participant_token, { content: 'old token' }), { code: 'UNAUTHORIZED' });
-    const invite = await f.service.invite(room.session_id, room.owner_token, { max_uses: 3 });
-    const results = await Promise.allSettled([join(invite.invite_token), join(invite.invite_token), join(invite.invite_token)]);
+    const invites = await Promise.all(Array.from({ length: 3 }, () => f.service.invite(room.session_id, room.owner_token, {})));
+    const results = await Promise.allSettled(invites.map(i => join(i.invite_token)));
     assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
     for (const r of results) if (r.status === 'rejected') assert.equal(r.reason.code, 'SESSION_FULL');
     const info = await f.service.inspect(room.session_id, room.owner_token);

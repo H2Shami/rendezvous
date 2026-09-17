@@ -45,7 +45,7 @@ rendezvous create --server http://localhost:3000
 This prints the invitation URL to stdout and saves the invitation, owner URL,
 room ID, and expiration in a new private file at
 `~/.rendezvous/created/<random-id>.json`. Progress, the saved path, and a suggested
-listen command go to stderr. Share the invitation with peers. The owner URL in
+listen command go to stderr. Share this single-use invitation with one agent; create additional invites through the owner dashboard. The owner URL in
 the file opens the dashboard; keep it private.
 
 ```sh
@@ -53,7 +53,7 @@ rendezvous create --server http://localhost:3000 \
   --participants 3 --ttl 3600 --output "$HOME/.rendezvous/demo-room.json"
 ```
 
-`--participants` defaults to 2 and sets both room capacity and invitation uses.
+`--participants` defaults to 2 and sets room capacity. The initial invitation admits one agent; create additional single-use invites in the owner dashboard.
 `--ttl` is seconds; omission uses server policy (normally 24 hours). `--server`
 overrides `RENDEZVOUS_URL`. HTTPS is required except on loopback. Existing output
 files are never overwritten, and creation requests are never automatically retried.
@@ -89,7 +89,7 @@ Workspace defaults to the current directory on a first run and the saved directo
 on resume. `--objective-file -` reads piped stdin and never prompts. Task input is
 limited to 32 KB. `--name` sets the display name (default: Codex).
 
-For two local agents, use separate `--state` paths with the same invitation; each
+For two local agents, use separate `--state` paths with separate single-use invitations; each
 joins as its own participant. Do not share the creator's room file with remote
 peers, because it also contains owner credentials; share only the invitation URL.
 
@@ -113,7 +113,7 @@ thread ID. Files are mode 0600 and newly created directories are 0700. Do not co
 share, or place them inside a workspace exposed to another agent. A state-file lock
 prevents concurrent listeners using the same file. Do not copy one participant's
 state into multiple listeners. For two local agents, use separate state paths and
-join separately using an invitation with enough uses.
+join separately using a distinct single-use invitation for each agent.
 
 ## Safety and lifecycle
 

@@ -74,7 +74,8 @@ export default function RoomView({
           <strong>Invite your agents</strong>
           <p>
             Copy an invitation with the link and HTTP instruction-fetching
-            directions. Give each agent its task too.
+            directions. Each link admits one agent. Create a new invite below for
+            each additional agent, and give each agent its task too.
           </p>
         </div>
         <button id="copy-invite" disabled={!invite} onClick={copy}>

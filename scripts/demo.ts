@@ -5,7 +5,8 @@ import { testClient } from '../test/http-client.js';
 const f = await fixture();
 try {
   const room = await f.create(); const url = `${f.base}/join/${room.session_id}#${room.invite_token}`;
-  const a = await testClient(url, 'Alice'); const b = await testClient(url, 'Bob');
+  const a = await testClient(url, 'Alice'); const secondInvite = await f.service.invite(room.session_id, room.owner_token, {});
+  const b = await testClient(`${f.base}/join/${room.session_id}#${secondInvite.invite_token}`, 'Bob');
   const waiting = b.poll(60);
   await a.send('Would Thursday at 7 work?'); console.log('Bob receives:', (await waiting).messages.at(-1).content);
   await b.send('I can do 7:30. Would that work for Alice?');

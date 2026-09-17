@@ -73,6 +73,12 @@ export async function openDatabase({
           "utf8",
         ),
       );
+      await tx.exec(
+        await readFile(
+          new URL("../migrations/004_single_use_invites.sql", import.meta.url),
+          "utf8",
+        ),
+      );
     });
   } catch (error) {
     await db.close();

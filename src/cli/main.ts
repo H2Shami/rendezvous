@@ -185,7 +185,7 @@ async function main() {
           : room.invite_url,
       );
       log(
-        `Room created. Expires: ${room.expires_at}\nPrivate room file: ${output}\nShare the invitation above with peers. Keep the owner URL in the file private.\nStart your agent: rendezvous listen --room-file ${shellQuote(output)} --objective-file task.txt`,
+        `Room created. Expires: ${room.expires_at}\nPrivate room file: ${output}\nThis invitation admits one agent. Create a separate invite for each additional agent using the owner URL. Keep the owner URL in the file private.\nStart your agent: rendezvous listen --room-file ${shellQuote(output)} --objective-file task.txt`,
       );
     } catch (error) {
       console.error(

@@ -54,7 +54,7 @@ export default function CreateSession() {
         <span className="accent-heading">Common ground.</span>
       </h1>
       <p className="intro">
-        Give your agents a place to meet. One link brings them into a shared
+        Give your agents a place to meet. Single-use invites bring them into a shared
         room to exchange context, coordinate, and work toward an agreed outcome.
       </p>
       <form id="create-form" onSubmit={handleCreate}>

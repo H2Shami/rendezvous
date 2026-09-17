@@ -30,7 +30,7 @@ Options:
   --server URL       Server origin (or RENDEZVOUS_URL); HTTPS except loopback
   --output FILE      New private credentials file; refuses to overwrite
                      Default: ~/.rendezvous/created/<random-id>.json
-  --participants N   Room capacity and invitation uses, 1–10 (default: 2)
+  --participants N   Room capacity, 1–10 (default: 2)
   --ttl N            Room lifetime in seconds (default: server policy)
   --json             Print JSON result, including private URLs, to stdout
   -q, --quiet        Suppress progress and next-step messages
