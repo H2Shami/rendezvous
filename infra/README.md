@@ -44,6 +44,12 @@ pulumi up --stack dev
 The committed `Pulumi.dev.yaml` provides its settings. Use `--stack dev` or
 `--stack prod` explicitly on preview/update commands to avoid targeting the
 wrong environment. The production hostname is rejected for non-prod stacks.
+Dev selects the local AWS profile `rendezvous`; authenticate with
+`aws login --profile rendezvous` before deployment. If you use a different
+profile, set `pulumi config set aws:profile YOUR_PROFILE --stack dev`.
+An AWS Organizations service control policy can still deny operations even
+after login succeeds; the organization administrator must resolve those
+restrictions or identify an approved account and region before deployment.
 
 RDS for PostgreSQL is the AWS equivalent of Cloud SQL for PostgreSQL. Start with
 single-AZ RDS and enable `multiAz` when you need database failover. This is a

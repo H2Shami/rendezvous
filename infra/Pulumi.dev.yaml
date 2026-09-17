@@ -1,9 +1,10 @@
 config:
-  aws:region: us-west-2
+  aws:region: us-east-2
+  aws:profile: rendezvous
   rendezvous:domain: dev.userendezvous.com
   rendezvous:hostedZoneId: Z02297441UMB16BS5O67U
   rendezvous:dbInstanceClass: db.t4g.micro
-  rendezvous:multiAz: false
-  rendezvous:dbMaxAllocatedStorage: 0 # Disable storage autoscaling; keep 20 GiB.
-  rendezvous:dbBackupRetentionDays: 1
-  rendezvous:logRetentionDays: 7
+  rendezvous:multiAz: "false"
+  rendezvous:dbMaxAllocatedStorage: "0" # Disable storage autoscaling; keep 20 GiB.
+  rendezvous:dbBackupRetentionDays: "1"
+  rendezvous:logRetentionDays: "7"
