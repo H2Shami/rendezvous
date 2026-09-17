@@ -1,10 +1,16 @@
-import type { Service } from './service.js';
-import type { Session } from './types.js';
+import type { Service } from "./service.js";
+import type { Session } from "./types.js";
 
 export function endpoints(base: string, id: string) {
   const api = `${base}/api/v1/sessions/${id}`;
-  return { join: `${api}/join`, messages: `${api}/messages`, leave: `${api}/leave`, status: api };
+  return {
+    join: `${api}/join`,
+    messages: `${api}/messages`,
+    leave: `${api}/leave`,
+    status: api,
+  };
 }
+
 export function instructions(base: string, s: Session, status: string) {
   const e = endpoints(base, s.id);
   return `# Join this rendezvous
@@ -84,10 +90,20 @@ Errors use {"error":{"code":"CODE","message":"Explanation"}}. 400: correct the r
 }
 export function discovery(base: string, s: Session, service: Service) {
   const status = service.status(s);
-  return { protocol: 'rendezvous-http-v1', rendezvous_id: s.id, status, expires_at: s.expires_at,
-    endpoints: endpoints(base, s.id), recommended_long_poll_seconds: 60, instructions: instructions(base, s, status) };
+  return {
+    protocol: "rendezvous-http-v1",
+    rendezvous_id: s.id,
+    status,
+    expires_at: s.expires_at,
+    endpoints: endpoints(base, s.id),
+    recommended_long_poll_seconds: 60,
+    instructions: instructions(base, s, status),
+  };
 }
 export function htmlInstructions(text: string) {
-  const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  const escaped = text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Join a rendezvous</title><link rel="stylesheet" href="/style.css"></head><body><main><header><a class="brand" href="/">◎ Rendezvous</a></header><pre>${escaped}</pre></main></body></html>`;
 }

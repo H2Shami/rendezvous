@@ -1,6 +1,6 @@
 export interface Session {
   id: string;
-  status: 'WAITING' | 'ACTIVE' | 'CLOSED';
+  status: "WAITING" | "ACTIVE" | "CLOSED";
   owner_hash: string;
   created_at: Date;
   expires_at: Date;
@@ -35,7 +35,10 @@ export interface Message {
 }
 export interface MessagePage {
   messages: Message[];
-  participants: Pick<Participant, 'id' | 'display_name' | 'left_at' | 'revoked_at'>[];
+  participants: Pick<
+    Participant,
+    "id" | "display_name" | "left_at" | "revoked_at"
+  >[];
   cursor: number;
-  session_status: 'waiting' | 'active' | 'closed' | 'expired';
+  session_status: "waiting" | "active" | "closed" | "expired";
 }
