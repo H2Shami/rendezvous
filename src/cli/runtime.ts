@@ -1,8 +1,10 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { agentLabels, type Agent } from "./config.js";
 
 export interface TurnResult {
   message: string | null;
@@ -17,7 +19,7 @@ export interface RuntimeAdapter {
   ): Promise<TurnResult>;
 }
 
-const outputSchema = {
+export const outputSchema = {
   type: "object",
   additionalProperties: false,
   required: ["message", "status"],
@@ -57,11 +59,85 @@ export function codexArguments(schema: string, threadId?: string) {
 }
 
 // Credentials for the transport stay in the parent; never put prompts/secrets in argv.
-function runtimeEnvironment() {
-  return Object.fromEntries(
+function runtimeEnvironment(agent: Agent) {
+  const env = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([name]) => !/^(RENDEZVOUS_|CODEX_THREAD_ID$|NODE_OPTIONS$)/.test(name),
+      ([name]) =>
+        !/^(RENDEZVOUS_|CODEX_THREAD_ID$|CLAUDECODE$|CLAUDE_CODE_SESSION_ID$|NODE_OPTIONS$)/.test(
+          name,
+        ),
     ),
+  );
+  if (agent === "opencode") {
+    const permission = {
+      "*": "deny",
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      list: "allow",
+    };
+    env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+      permission,
+      agent: { rendezvous: { mode: "primary", permission } },
+    });
+    env.OPENCODE_DISABLE_AUTOUPDATE = "true";
+  }
+  return env;
+}
+
+export function agentArguments(
+  agent: Agent,
+  schema: string,
+  threadId?: string,
+): string[] {
+  if (agent === "codex") return codexArguments(schema, threadId);
+  if (agent === "claude")
+    return [
+      "--print",
+      "--verbose",
+      "--output-format",
+      "stream-json",
+      "--json-schema",
+      JSON.stringify(outputSchema),
+      "--permission-mode",
+      "dontAsk",
+      "--tools",
+      "Read,Glob,Grep",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+      ...(threadId ? ["--resume", threadId] : []),
+    ];
+  if (agent === "cursor")
+    return [
+      "--print",
+      "--mode",
+      "ask",
+      "--output-format",
+      "stream-json",
+      ...(threadId ? ["--resume", threadId] : []),
+    ];
+  return [
+    "run",
+    "--format",
+    "json",
+    "--agent",
+    "rendezvous",
+    ...(threadId ? ["--session", threadId] : []),
+  ];
+}
+
+export function findAgentExecutable(agent: Agent): string {
+  const candidates = agent === "cursor" ? ["agent", "cursor-agent"] : [agent];
+  for (const executable of candidates) {
+    const check = spawnSync(executable, ["--version"], {
+      timeout: 10000,
+      stdio: "ignore",
+    });
+    if (!check.error && check.status === 0) return executable;
+  }
+  throw new Error(
+    `Cannot run ${agentLabels[agent]}. Install and authenticate its CLI, then try again (expected ${candidates.join(" or ")} on PATH).`,
   );
 }
 
@@ -70,6 +146,7 @@ export class CodexRuntime implements RuntimeAdapter {
     private workspace: string,
     private timeoutMs = 300_000,
     private executable = "codex",
+    private agent: Agent = "codex",
   ) {}
 
   async run(
@@ -96,13 +173,17 @@ export class CodexRuntime implements RuntimeAdapter {
     signal: AbortSignal,
     onThread: (id: string) => Promise<void>,
   ): Promise<TurnResult> {
-    const child = spawn(this.executable, codexArguments(schema, threadId), {
-      cwd: this.workspace,
-      env: runtimeEnvironment(),
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-      shell: false,
-    });
+    const child = spawn(
+      this.executable,
+      agentArguments(this.agent, schema, threadId),
+      {
+        cwd: this.workspace,
+        env: runtimeEnvironment(this.agent),
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+        shell: false,
+      },
+    );
     let killed = false;
     let escalation: NodeJS.Timeout | undefined;
     const kill = (hard = false) => {
@@ -143,6 +224,31 @@ export class CodexRuntime implements RuntimeAdapter {
         if (line.length > 2_000_000)
           throw new Error("Runtime event too large.");
         const event = JSON.parse(line);
+        if (this.agent !== "codex") {
+          const id =
+            this.agent === "opencode" ? event.sessionID : event.session_id;
+          if (typeof id === "string") {
+            if (foundThread && id !== foundThread)
+              throw new Error("Runtime resumed the wrong thread.");
+            if (!foundThread) {
+              foundThread = id;
+              await onThread(id);
+            }
+          }
+          if (event.type === "error" || event.is_error === true) failed = true;
+          if (this.agent === "opencode") {
+            if (event.type === "text" && typeof event.part?.text === "string")
+              finalText = event.part.text;
+            if (event.type === "step_finish" && event.part?.reason === "stop")
+              completed = true;
+          } else if (event.type === "result") {
+            completed = event.subtype === "success" && event.is_error !== true;
+            finalText = event.structured_output
+              ? JSON.stringify(event.structured_output)
+              : event.result;
+          }
+          continue;
+        }
         if (
           event.type === "thread.started" &&
           typeof event.thread_id === "string"
@@ -168,7 +274,7 @@ export class CodexRuntime implements RuntimeAdapter {
         );
       if (code !== 0 || failed || !completed || !foundThread) {
         throw new Error(
-          `Codex turn failed (exit ${code ?? "unknown"}). Check Codex login/configuration separately.`,
+          `${agentLabels[this.agent]} turn failed (exit ${code ?? "unknown"}). Check the agent login/configuration separately.`,
         );
       }
       return parseTurnResult(finalText);
@@ -182,4 +288,13 @@ export class CodexRuntime implements RuntimeAdapter {
       signal.removeEventListener("abort", stop);
     }
   }
+}
+
+export function createRuntime(
+  agent: Agent,
+  workspace: string,
+  timeout: number,
+  executable: string,
+): RuntimeAdapter {
+  return new CodexRuntime(workspace, timeout, executable, agent);
 }

@@ -3,7 +3,7 @@
 This stack runs Next.js and one Express relay together on ECS Fargate, behind an
 HTTPS Application Load Balancer. PostgreSQL runs on private Amazon RDS with
 encrypted storage, automated backups, deletion protection, and a final
-snapshot on intentional deletion. The default region is **us-west-2 (Oregon)**.
+snapshot on intentional deletion. The default region is **us-east-2 (Ohio)**.
 Production uses **userendezvous.com**; development uses **dev.userendezvous.com**.
 Each stack must explicitly configure its hostname to avoid DNS collisions.
 
@@ -17,7 +17,7 @@ but manage different DNS records. No production data is copied into development.
 | Setting | dev | prod |
 | --- | --- | --- |
 | Domain | dev.userendezvous.com | userendezvous.com |
-| Region | us-west-2 | us-west-2 |
+| Region | us-east-2 | us-east-2 |
 | RDS | db.t4g.micro, single-AZ | db.t4g.micro, single-AZ |
 | Database storage | 20 GiB, no growth | 20 GiB, grows up to 100 GiB |
 | Automated backup retention | 1 day | 7 days |
@@ -44,7 +44,7 @@ pulumi up --stack dev
 The committed `Pulumi.dev.yaml` provides its settings. Use `--stack dev` or
 `--stack prod` explicitly on preview/update commands to avoid targeting the
 wrong environment. The production hostname is rejected for non-prod stacks.
-Dev selects the local AWS profile `rendezvous`; authenticate with
+Both stacks select the local AWS profile `rendezvous`; authenticate with
 `aws login --profile rendezvous` before deployment. If you use a different
 profile, set `pulumi config set aws:profile YOUR_PROFILE --stack dev`.
 An AWS Organizations service control policy can still deny operations even
@@ -63,7 +63,7 @@ task before starting its replacement. Deployments cause a short interruption.
   and AWS credentials for your intended account.
 - A domain/subdomain. With a Route 53 public hosted zone, Pulumi handles DNS and
   certificate validation. Otherwise obtain an **issued ACM certificate in
-  us-west-2** covering your hostname, and set its ARN below.
+  us-east-2** covering your hostname, and set its ARN below.
 - A Pulumi state backend. `pulumi login` uses Pulumi Cloud; an existing managed
   backend also works. Restrict access to state: it includes encrypted secrets.
 - Verify the account with `aws sts get-caller-identity` before provisioning.
@@ -83,13 +83,13 @@ cd infra
 npm ci
 pulumi login
 pulumi stack init prod
-pulumi config set aws:region us-west-2
+pulumi config set aws:region us-east-2
 pulumi config set domain userendezvous.com
 
 # Choose one certificate/DNS approach:
 pulumi config set hostedZoneId Z02297441UMB16BS5O67U
 # OR, for DNS hosted elsewhere:
-# pulumi config set certificateArn arn:aws:acm:us-west-2:ACCOUNT:certificate/ID
+# pulumi config set certificateArn arn:aws:acm:us-east-2:ACCOUNT:certificate/ID
 
 # Optional settings (defaults shown):
 pulumi config set dbInstanceClass db.t4g.micro

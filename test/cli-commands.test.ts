@@ -7,18 +7,18 @@ import { join, resolve } from 'node:path';
 import { fixture } from './helpers.js';
 
 function cli(args: string[], input?: string, env: NodeJS.ProcessEnv = {}) {
-  return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveResult, reject) => {
+  return mkdtemp(join(tmpdir(), 'rendezvous-command-home-')).then(home => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveResult, reject) => {
     const child = spawn(process.execPath, ['dist/cli/main.js', ...args], {
-      env: { ...process.env, RENDEZVOUS_INVITATION_URL: '', RENDEZVOUS_URL: '', ...env },
+      env: { ...process.env, RENDEZVOUS_INVITATION_URL: '', RENDEZVOUS_URL: '', RENDEZVOUS_HOME: home, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '', stderr = '';
     child.stdout.on('data', data => { stdout += data; });
     child.stderr.on('data', data => { stderr += data; });
     child.on('error', reject);
-    child.on('close', code => resolveResult({ code, stdout, stderr }));
+    child.on('close', async code => { await rm(home, { recursive: true, force: true }); resolveResult({ code, stdout, stderr }); });
     child.stdin.end(input);
-  });
+  }));
 }
 
 test('help is available without setup and overrides invalid options', async () => {
@@ -33,7 +33,7 @@ test('help is available without setup and overrides invalid options', async () =
 });
 
 test('invalid commands and flags fail with usage guidance and clean stdout', async () => {
-  for (const args of [['lisetn'], ['listen', '--json'], ['create', '--state', 'x'],
+  for (const args of [['lisetn'], ['listen', '--json'], ['rooms', '--state', 'x'],
     ['listen', '--max-turns', '0'], ['create'], ['create', '--server', 'http://example.com'], ['create', '--server', 'http://localhost', '--participants', '11']]) {
     const result = await cli(args);
     assert.equal(result.code, 2); assert.equal(result.stdout, '');
@@ -46,7 +46,7 @@ test('create saves private credentials, supports JSON, and produces a usable inv
   const directory = await mkdtemp(join(tmpdir(), 'rendezvous-create-'));
   const output = join(directory, 'room.json');
   try {
-    const result = await cli(['create', '--server', f.base, '--participants', '3', '--ttl', '600', '--output', output, '--json']);
+    const result = await cli(['create', '--no-join', '--server', f.base, '--participants', '3', '--ttl', '600', '--output', output, '--json']);
     assert.equal(result.code, 0, result.stderr);
     const data = JSON.parse(result.stdout);
     assert.equal(data.room_file, output);
@@ -61,7 +61,7 @@ test('create saves private credentials, supports JSON, and produces a usable inv
     await assert.rejects(f.service.join(data.session_id, { invite_token: invite.hash.slice(1) }, 'test-fourth'), { code: 'INVITE_EXHAUSTED' });
     assert.doesNotMatch(result.stderr, new RegExp(invite.hash.slice(1)));
     const previous = await readFile(output, 'utf8');
-    const duplicate = await cli(['create', '--server', f.base, '--output', output]);
+    const duplicate = await cli(['create', '--no-join', '--server', f.base, '--output', output]);
     assert.equal(duplicate.code, 1); assert.match(duplicate.stderr, /already exists/);
     assert.equal(await readFile(output, 'utf8'), previous);
   } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
@@ -71,7 +71,7 @@ test('create text output is just the invitation; quiet suppresses progress', asy
   const f = await fixture();
   const directory = await mkdtemp(join(tmpdir(), 'rendezvous-create-'));
   try {
-    const result = await cli(['create', '--output', join(directory, 'room.json'), '-q'], undefined, { RENDEZVOUS_URL: f.base });
+    const result = await cli(['create', '--no-join', '--output', join(directory, 'room.json'), '-q'], undefined, { RENDEZVOUS_URL: f.base });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stderr, '');
     assert.match(result.stdout, /^http:\/\/127\.0\.0\.1:\d+\/join\/[^\n]+\n$/);
@@ -105,14 +105,14 @@ test('created room file feeds a listener and resumes the saved conversation', {
     const fake = join(directory, 'codex');
     await copyFile(new URL('./fixtures/codex-fake.mjs', import.meta.url), fake);
     await chmod(fake, 0o700);
-    const created = await cli(['create', '--server', f.base, '--output', roomFile, '--json']);
+    const created = await cli(['create', '--no-join', '--server', f.base, '--output', roomFile, '--json']);
     assert.equal(created.code, 0, created.stderr);
     assert.ok(JSON.parse(created.stdout).invite_url.startsWith(f.base));
     const args = ['listen', '--state', stateFile, '--objective-file', '-', '--max-turns', '1'];
     const env = { PATH: `${directory}:${process.env.PATH}` };
     const first = await cli([...args, '--room-file', roomFile, '--workspace', directory], 'Introduce yourself.', env);
     assert.equal(first.code, 0, first.stderr); assert.equal(first.stdout, '');
-    assert.match(first.stderr, /Resume: rendezvous listen --state/);
+    assert.match(first.stderr, /Resume: rendezvous join --state/);
     const saved = JSON.parse(await readFile(stateFile, 'utf8'));
     assert.equal(saved.objective, 'Introduce yourself.'); assert.equal(saved.threadId, 'fixture-thread');
     const second = await cli(args, 'Updated local instructions.', env);
@@ -120,5 +120,141 @@ test('created room file feeds a listener and resumes the saved conversation', {
     const resumed = JSON.parse(await readFile(stateFile, 'utf8'));
     assert.equal(resumed.participantId, saved.participantId);
     assert.equal(resumed.objective, 'Updated local instructions.');
+  } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('config persists agent/server defaults and rejects invalid agent names', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'rendezvous-config-'));
+  const env = { RENDEZVOUS_HOME: home };
+  try {
+    assert.equal((await cli(['config', 'agent', 'claude'], undefined, env)).code, 0);
+    assert.equal((await cli(['config', 'server', 'http://localhost:4372'], undefined, env)).code, 0);
+    const shown = await cli(['config', 'show', '--json'], undefined, env);
+    assert.deepEqual(JSON.parse(shown.stdout), { agent: 'claude', server: 'http://localhost:4372' });
+    assert.equal((await stat(join(home, 'config.json'))).mode & 0o777, 0o600);
+    const invalid = await cli(['config', 'agent', 'unknown'], undefined, env);
+    assert.equal(invalid.code, 2); assert.match(invalid.stderr, /codex, claude, cursor, opencode/);
+    assert.equal(JSON.parse((await cli(['config', 'show', '--json'], undefined, env)).stdout).agent, 'claude');
+    const empty = await cli(['config', 'show', '--json']);
+    assert.equal(JSON.parse(empty.stdout).server, 'https://dev.userendezvous.com');
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test('create auto-joins with configured agent, session and server; rooms lists owned rooms without credentials', {
+  skip: process.platform === 'win32', timeout: 15000,
+}, async () => {
+  const f = await fixture();
+  const directory = await mkdtemp(join(tmpdir(), 'rendezvous-auto-'));
+  const env = { RENDEZVOUS_HOME: join(directory, 'home'), PATH: `${directory}:${process.env.PATH}`, FIXTURE_LOG: join(directory, 'calls.jsonl') };
+  try {
+    for (const agent of ['codex', 'claude', 'agent', 'opencode']) {
+      await copyFile(new URL('./fixtures/agent-fake.mjs', import.meta.url), join(directory, agent));
+      await chmod(join(directory, agent), 0o700);
+    }
+    await cli(['config', 'agent', 'claude'], undefined, env);
+    await cli(['config', 'server', f.base], undefined, env);
+    const created = await cli(['create', '--session', 'existing-session', '--max-turns', '1', '--json', '--workspace', directory], undefined, env);
+    assert.equal(created.code, 0, created.stderr);
+    const room = JSON.parse(created.stdout);
+    assert.match(created.stderr, /Joining with Claude Code/);
+    assert.match(created.stderr, /resumed Claude Code turn/);
+    const rows = await cli(['rooms', '--json'], undefined, env);
+    assert.equal(rows.code, 0, rows.stderr);
+    assert.equal(JSON.parse(rows.stdout)[0].room, room.session_id);
+    assert.ok(!rows.stdout.includes(new URL(room.invite_url).hash.slice(1)));
+    assert.ok(!rows.stdout.includes(new URL(room.owner_url).hash.slice(1)));
+    await cli(['config', 'agent', 'codex'], undefined, env);
+    const resumed = await cli(['join', room.session_id, '--task', 'Follow up', '--max-turns', '1'], undefined, env);
+    assert.equal(resumed.code, 0, resumed.stderr);
+    assert.match(resumed.stderr, /resumed Claude Code turn/);
+    const wrong = await cli(['join', room.session_id, '--session', 'different-session', '--task', 'Follow up'], undefined, env);
+    assert.equal(wrong.code, 2); assert.match(wrong.stderr, /bound to another agent session/);
+    const calls = (await readFile(env.FIXTURE_LOG, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every(call => call.args.includes('existing-session')));
+    assert.ok(calls.every(call => !call.prompt.includes(new URL(room.invite_url).hash.slice(1))));
+    const override = await cli(['create', '--agent', 'opencode', '--task', 'Coordinate', '--workspace', directory, '--max-turns', '1', '--json'], undefined, env);
+    assert.equal(override.code, 0, override.stderr); assert.match(override.stderr, /OpenCode turn/);
+    assert.equal(JSON.parse((await cli(['config', 'show', '--json'], undefined, env)).stdout).agent, 'codex');
+  } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('join accepts URL or room/token and supports per-command agent selection', {
+  skip: process.platform === 'win32', timeout: 15000,
+}, async () => {
+  const f = await fixture();
+  const directory = await mkdtemp(join(tmpdir(), 'rendezvous-join-'));
+  const env = { RENDEZVOUS_HOME: join(directory, 'home'), PATH: `${directory}:${process.env.PATH}` };
+  try {
+    await copyFile(new URL('./fixtures/agent-fake.mjs', import.meta.url), join(directory, 'agent'));
+    await chmod(join(directory, 'agent'), 0o700);
+    const room = await f.create();
+    const first = await cli(['join', `${f.base}/join/${room.session_id}#${room.invite_token}`, '--agent', 'cursor', '--task', 'Review',
+      '--workspace', directory, '--max-turns', '1'], undefined, env);
+    assert.equal(first.code, 0, first.stderr); assert.match(first.stderr, /Cursor turn/);
+    const second = await cli(['join', '--room', room.session_id, '--token', room.invite_token, '--server', f.base,
+      '--agent', 'cursor', '--task', 'Review', '--state', join(directory, 'second.json'), '--workspace', directory, '--max-turns', '1'], undefined, env);
+    assert.equal(second.code, 0, second.stderr);
+    const rows = await cli(['rooms', '--json'], undefined, env);
+    assert.deepEqual(JSON.parse(rows.stdout), []);
+    const missing = await cli(['join', '--no-input'], undefined, env);
+    assert.equal(missing.code, 2); assert.match(missing.stderr, /Invitation URL or room ID/);
+  } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
+function terminal(command: string[], steps: { wait: string; send: string }[], env: NodeJS.ProcessEnv) {
+  return new Promise<{ code: number; stdout: string; transcript: string }>((resolveResult, reject) => {
+    const child = spawn('python3', ['test/fixtures/cli-prompt.py'], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', d => { stdout += d; }); child.stderr.on('data', d => { stderr += d; });
+    child.on('error', reject);
+    child.on('close', code => { if (code !== 0) reject(new Error(stderr)); else { try { resolveResult(JSON.parse(stdout)); } catch (e) { reject(e); } } });
+    child.stdin.end(JSON.stringify({ command, steps }));
+  });
+}
+
+test('interactive join prompts for room, hides token, asks task, and joins; config prompts for agent', {
+  skip: process.platform === 'win32', timeout: 20000,
+}, async () => {
+  const f = await fixture();
+  const directory = await mkdtemp(join(tmpdir(), 'rendezvous-prompts-'));
+  const env = { RENDEZVOUS_HOME: join(directory, 'home'), RENDEZVOUS_URL: f.base,
+    RENDEZVOUS_INVITATION_URL: '', RENDEZVOUS_TOKEN: '', PATH: `${directory}:${process.env.PATH}` };
+  try {
+    await copyFile(new URL('./fixtures/agent-fake.mjs', import.meta.url), join(directory, 'codex'));
+    await chmod(join(directory, 'codex'), 0o700);
+    const room = await f.create();
+    const result = await terminal([process.execPath, 'dist/cli/main.js', 'join', '--workspace', directory, '--max-turns', '1'], [
+      { wait: 'Invitation URL or room ID:', send: room.session_id + '\n' },
+      { wait: 'Invitation token:', send: room.invite_token + '\n' },
+      { wait: 'What should your agent work on?:', send: 'Coordinate a review\n' },
+    ], env);
+    assert.equal(result.code, 0, result.transcript);
+    assert.match(result.transcript, /Joined room/);
+    assert.ok(!result.transcript.includes(room.invite_token));
+    const config = await terminal([process.execPath, 'dist/cli/main.js', 'config'], [{ wait: '[codex]:', send: 'claude\n' }], env);
+    assert.equal(config.code, 0, config.transcript);
+    assert.equal(JSON.parse(await readFile(join(env.RENDEZVOUS_HOME, 'config.json'), 'utf8')).agent, 'claude');
+    const cancelled = await terminal([process.execPath, 'dist/cli/main.js', 'join'], [{ wait: 'Invitation URL or room ID:', send: '\x03' }], env);
+    assert.equal(cancelled.code, 130);
+  } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('owner command recovers the printed creation link without revealing it in rooms output', async () => {
+  const f = await fixture();
+  const directory = await mkdtemp(join(tmpdir(), 'rendezvous-owner-'));
+  const env = { RENDEZVOUS_HOME: directory };
+  try {
+    const created = await cli(['create', '--no-join', '--server', f.base, '--json'], undefined, env);
+    assert.equal(created.code, 0, created.stderr);
+    const room = JSON.parse(created.stdout);
+    assert.ok(created.stderr.includes(`Owner: ${room.owner_url}`));
+    const owner = await cli(['owner', room.session_id], undefined, env);
+    assert.equal(owner.code, 0, owner.stderr);
+    assert.equal(owner.stdout.trim(), room.owner_url);
+    const fromFile = await cli(['owner', '--room-file', room.room_file, '--json'], undefined, env);
+    assert.deepEqual(JSON.parse(fromFile.stdout), { owner_url: room.owner_url });
+    const rows = await cli(['rooms', '--json'], undefined, env);
+    assert.ok(!rows.stdout.includes(room.owner_url));
   } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
 });

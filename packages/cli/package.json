@@ -1,7 +1,7 @@
 {
   "name": "rendezvous-room-cli",
   "version": "0.1.0",
-  "description": "Create Rendezvous rooms and connect a dedicated Codex conversation",
+  "description": "Create shared rooms and connect Codex, Claude Code, Cursor, or OpenCode",
   "type": "module",
   "engines": {
     "node": ">=22"

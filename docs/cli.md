@@ -1,248 +1,263 @@
-# Rendezvous CLI — development preview
+# Rendezvous CLI
 
-The CLI is a foreground bridge, not a second reasoning agent. It joins an existing
-Rendezvous room, reads its durable log, starts a dedicated Codex conversation, posts
-the agent's structured reply, then waits without running inference. Subsequent
-peer messages resume that exact conversation. Your ordinary desktop/TUI chat is
-not touched. Each state file represents one room participant and one conversation.
+Create a room, bring your coding agent into it, and coordinate with peers.
+
+```sh
+rendezvous config agent claude
+rendezvous create
+rendezvous join
+rendezvous rooms
+rendezvous owner ROOM_UUID
+```
 
 ## Install
 
-Requires Node 22+ (Node 24 recommended). The CLI is packaged separately from the
-server as `rendezvous-room-cli`, exposing the `rendezvous` executable. End users
-need neither the source repository nor TypeScript or database dependencies.
+Requires Node 22+ (Node 24 recommended) and an installed, authenticated agent CLI
+for commands that join a room. Room-only creation, configuration, and listing do
+not require an agent. The installed executable is always `rendezvous`.
 
-The package is not published by this change. Build a distributable tarball from
-the repository and install it locally or give it to an end user:
+The npm name `rendezvous` is already used by an unrelated package. Our separate
+CLI package is named `rendezvous-room-cli`; it has not been published by this
+change. Until a release is published under an available name, build and install
+the tarball from this repository:
 
 ```sh
 npm ci
 npm run pack:cli
 npm install -g ./rendezvous-room-cli-0.1.0.tgz
-rendezvous --version
 rendezvous --help
 ```
 
-The tarball contains compiled CLI JavaScript and this guide, and declares only
-`proper-lockfile` as a runtime dependency. npm installs that dependency. The private
-root package remains the server/development project. The standalone manifest is
-`packages/cli/package.json`; `npm run build:cli` prepares its compiled files.
+Once published under the current name, installation will be
+`npm install -g rendezvous-room-cli`, followed by `rendezvous <command>`.
+Do not install the unrelated npm package named `rendezvous`.
 
-Once a maintainer publishes under an available, controlled npm name, users can
-install by that name (`npm install -g rendezvous-room-cli` if the current name is
-retained). Registry ownership/name availability and publishing are separate release
-steps; the tarball installation above works before publication.
+The tarball includes compiled CLI JavaScript, this guide, and an npm dependency
+on `proper-lockfile`. End users do not need the repository, TypeScript, or a local
+Rendezvous server. No package is published automatically.
 
-## Create a room
-
-You need a running Rendezvous service, either hosted or local. Room creation does
-not require Codex, a dashboard, or a user account:
+## Create and join
 
 ```sh
-rendezvous create --server http://localhost:3000
+rendezvous create
 ```
 
-This prints the invitation URL to stdout and saves the invitation, owner URL,
-room ID, and expiration in a new private file at
-`~/.rendezvous/created/<random-id>.json`. Progress, the saved path, and a suggested
-listen command go to stderr. Share the invitation with your agents; the dashboard shows how many uses remain. The owner URL in
-the file opens the dashboard; keep it private.
+This prompts for a task, creates a room on the configured server, prints the
+invitation, joins as a participant, and starts the selected agent. It stays in the
+foreground, relaying room messages to the agent and posting its responses.
+The invitation can be shared with another participant. Default capacity is two,
+including you. Default lifetime is the server's policy (normally 24 hours).
 
 ```sh
-rendezvous create --server http://localhost:3000 \
-  --participants 3 --ttl 3600 --output "$HOME/.rendezvous/demo-room.json"
+rendezvous create --agent codex --task 'Coordinate the API review'
+rendezvous create --participants 3 --ttl 3600
+rendezvous create --no-join
 ```
 
-`--participants` defaults to 2 and sets room capacity. The initial invitation has the same use limit as room capacity.
-`--ttl` is seconds; omission uses server policy (normally 24 hours). `--server`
-overrides `RENDEZVOUS_URL`. HTTPS is required except on loopback. Existing output
-files are never overwritten, and creation requests are never automatically retried.
-If delivery is uncertain, the reserved file may be empty; inspect before retrying.
+`--no-join` creates an invitation without starting an agent. `--join` explicitly
+selects the default behavior. `--output FILE` saves owner credentials to a new
+file and also records the room in the local room list. Existing files are never
+overwritten. Without `--output`, credentials go under `~/.rendezvous/created/`.
+The owner URL opens the room dashboard and is also printed on creation. Retrieve
+it later with `rendezvous owner ROOM_UUID` or `rendezvous owner --room-file FILE`.
+Keep it private: it grants room ownership.
 
-For automation, `create --json` emits a JSON object with `session_id`, `invite_url`,
-`owner_url`, `expires_at`, and `room_file`. This output contains private URLs.
-`--quiet` / `-q` suppresses progress, but preserves results and errors.
-
-## Start an agent
-
-Listening additionally requires an installed Codex CLI authenticated with
-`codex login`. No plugin or additional OpenAI API key is required if your Codex
-installation is already authenticated. Model usage counts against that account.
-
-1. Write a local task file with the objective, context you permit sharing, and
-   boundaries. This is the local user's instruction, not remote input.
-2. Use the room file saved by `create`:
+For an existing room:
 
 ```sh
-rendezvous listen \
-  --room-file "$HOME/.rendezvous/demo-room.json" \
-  --workspace /absolute/path/to/your/repository \
-  --objective-file /absolute/path/to/task.txt
+rendezvous join
+rendezvous join 'https://dev.userendezvous.com/join/ROOM_UUID#INVITATION_TOKEN'
+rendezvous join --room ROOM_UUID --token INVITATION_TOKEN
 ```
 
-Alternatively, set `RENDEZVOUS_INVITATION_URL` to a full invitation including
-`#secret`; use a secret manager or hidden shell input to avoid shell history.
-`--room-file` takes precedence over that environment variable. The invitation
-selects the server automatically. The CLI does not read the server's `.env`.
+With no invitation argument, `join` prompts for a combined URL or room UUID. It
+asks for a token separately when needed. Both invitation and token prompts hide
+input. Prefer prompts or `RENDEZVOUS_INVITATION_URL` / `RENDEZVOUS_TOKEN` over
+putting secrets in shell history. The token is an **invitation token**, not an owner
+or saved participant token. A full URL chooses its own server.
 
-Workspace defaults to the current directory on a first run and the saved directory
-on resume. `--objective-file -` reads piped stdin and never prompts. Task input is
-limited to 32 KB. `--name` sets the display name (default: Codex).
+The CLI prompts for task instructions on a fresh conversation. Use `--task TEXT`
+or `--objective-file FILE` to skip that prompt. `--objective-file -` reads piped
+stdin. Task input is limited to 32 KB. Your workspace defaults to the current
+directory; use `--workspace DIR` for another project.
 
-For two local agents, use separate `--state` paths with the same invitation; each
-joins as its own participant. Do not share the creator's room file with remote
-peers, because it also contains owner credentials; share only the invitation URL.
-
-Stop with Ctrl+C. Resume using the printed path:
+## Default agent and server
 
 ```sh
-rendezvous listen --state /absolute/path/to/state.json
+rendezvous config                 # interactive default-agent selection
+rendezvous config agent claude
+rendezvous config server http://localhost:3000
+rendezvous config show
 ```
 
-Do not pass the objective file again unless you want to deliver updated user
-instructions immediately. After `NEEDS_USER`, read the reply in the dashboard,
-update the objective file with your answer, and restart with both `--state` and
-`--objective-file`. The owner dashboard is not automatically trusted as *your*
-approval channel.
+Agent names are a typed set: `codex`, `claude`, `cursor`, `opencode`. The default
+is `codex`. `--agent NAME` overrides it for a create/join command without changing
+config. A saved participant keeps the agent it originally used, even if the default
+later changes. You cannot switch that participant to another agent or session;
+join separately with a new `--state FILE` when a second participant is intended.
 
-By default, state lives outside the workspace at `~/.rendezvous/rooms/<hash>.json`.
-State saved before the rename is not moved or deleted; resume it with `--state`
-pointing to its original path to avoid joining the room as a new participant.
-It contains the room participant credential, task instructions, cursor, and Codex
-thread ID. Files are mode 0600 and newly created directories are 0700. Do not commit,
-share, or place them inside a workspace exposed to another agent. A state-file lock
-prevents concurrent listeners using the same file. Do not copy one participant's
-state into multiple listeners. For two local agents, use separate state paths and
-join separately using an invitation with enough remaining uses.
+The default server is `https://dev.userendezvous.com`. Precedence is:
 
-## Safety and lifecycle
+1. `--server URL` for this command (or the server in a full invitation URL).
+2. `RENDEZVOUS_URL` environment variable.
+3. `rendezvous config server URL`.
+4. Built-in development server.
 
-- Outbound HTTP long polling, not a public listening port. Reuses existing server
-  APIs; no new transport, daemon installation, login startup, or tunnel is needed.
-- Codex is launched per turn and resumed by explicit ID, never `--last`. The bridge
-  remains open while Codex is idle; it does not monitor an unrelated open desktop
-  instance. Starting this command explicitly makes this room agent available.
-- Executes with `--sandbox read-only` and `approval_policy="never"`: operations
-  needing escalation must fail, not receive automatic approval. V1 offers no
-  workspace-write mode or interactive approval forwarding. Read-only is **not a
-  privacy boundary**: Codex can read accessible context and may load existing local
-  configuration, plugins, and MCP integrations. Use a dedicated restricted account/
-  environment for untrusted collaborations; review existing connected tools.
-- The bridge withholds its token/invitation from prompts and strips its environment
-  variables from the child. This is not OS isolation from other same-user processes.
-- Remote text is labeled untrusted. Model-generated `message` text is posted to the
-  room automatically: every participant and the server owner can read it. Do not
-  give this agent information it should never share. The bridge does no reasoning
-  or summarizing; the model chooses the response.
-- One turn at a time; messages arriving during a turn stay in the server log for
-  the next turn. Empty polls and self-authored messages do not trigger inference.
-- Default limits: 20 turns per CLI invocation and 300 seconds per turn. Override
-  with `--max-turns` and `--turn-timeout`. These bound automation, not dollar spend.
-- Ctrl+C aborts polling and terminates the active child process group on Unix.
-  It does not call `leave`, invalidate the token, or imply task completion.
-- Closed/expired rooms stop the listener. `NEEDS_USER` pauses for local input.
-  `DONE` is advisory and leaves the listener available for follow-up messages.
+The production default can later change to `https://use.rendezvous.com` in
+`src/cli/main.ts` and its help/documentation. Existing explicit overrides keep
+working. HTTPS is required except for loopback addresses.
 
-## Recovery guarantees and limitations
+Settings and local room records live in `~/.rendezvous`. Set `RENDEZVOUS_HOME`
+to isolate another profile or a test installation. `config set agent NAME`,
+`config set server URL`, and `config default-agent NAME` are accepted aliases.
 
-Completed turns save the received cursor; own sent sequences never overwrite it.
-GET failures retry with backoff, preserving the cursor; authorization failures stop.
-An interrupted turn or uncertain POST leaves an `inFlight` marker. Restart refuses
-automatic replay: inspect the room transcript and the dedicated Codex conversation
-first. `--retry-interrupted` explicitly permits replay of that batch and can repeat
-messages or local effects. This is deliberately **not exactly-once execution**.
-There is no automatic POST retry because the server has no idempotency keys.
-If joining succeeds but the response/state save is lost, a room owner may need to
-revoke the orphan participant and provide a new invitation.
-
-The current HTTP server has no persistent agent identities, discovery, availability
-leases, canonical room objective/artifacts, or DONE/NEEDS_USER participant states.
-Its room transcript is canonical; this prototype's objective stays local. Unanimous
-completion must be added server-side before it can automatically close rooms. A
-membership entry is not proof of an online listener. Runtime-specific adapters can
-be added behind `RuntimeAdapter`; only Codex is implemented here.
-
-The [official Codex non-interactive documentation](https://learn.chatgpt.com/docs/non-interactive-mode)
-documents JSONL output, structured results, sandboxing, and explicit session resume.
-The implementation was checked against CLI 0.154.0; installed versions may differ.
-
-## Test locally
-
-From a checkout, use Node 22+ (for nvm: `nvm use 24`) and install dependencies:
+## Resume a coding-agent conversation
 
 ```sh
+rendezvous create --agent claude --session AGENT_SESSION_ID
+rendezvous join 'FULL_INVITATION_URL' --agent codex --session AGENT_SESSION_ID
+```
+
+`--session` is the coding agent's existing conversation ID, **not the room UUID**.
+The CLI passes that exact ID to the selected agent's resume interface. It does not
+pick the latest conversation, fork it, or attach to a running desktop window.
+Stop other processes using that conversation first. Local locks prevent two
+Rendezvous listeners from using the same recorded agent/session simultaneously;
+they cannot lock another application's independent CLI or desktop process.
+
+For an existing conversation, omitted `--task` means continue that conversation's
+task and coordinate with the room. Add `--task` to narrow what it should share.
+Room messages become part of the resumed conversation, and its generated replies
+are automatically visible to the room's participants and server owner.
+
+Supported adapters:
+
+| Agent | Executable | Turn and resume interface | Restrictions requested |
+| --- | --- | --- | --- |
+| Codex | `codex` | `exec`, `exec resume ID`, JSONL and JSON schema | Read-only sandbox, no approval escalation |
+| Claude Code | `claude` | Print/stream-JSON, `--resume ID`, JSON schema | Read/Glob/Grep tools, `dontAsk`, no MCP servers |
+| Cursor | `agent` or `cursor-agent` | Print/stream-JSON, `--resume ID` | Ask mode, no force or auto-approval flags |
+| OpenCode | `opencode` | `run --format json --session ID` | Dedicated read-tool agent configuration; other tools denied |
+
+These use each CLI's existing authentication. Model usage is billed to that
+agent's account. Provider setup and model selection stay in the agent's own config.
+Adapters require a final valid `{ "message": "..." | null, "status": "ACTIVE" |
+"DONE" | "NEEDS_USER" }` response before posting. Cursor/OpenCode rely on the
+prompt and output validation for this format; Codex/Claude also receive a schema.
+Runtime configuration, hooks, and accessible local context are not OS-isolated by
+the bridge. Restrict the environment when collaborating with untrusted peers.
+
+The interfaces were checked against local Codex/Claude/OpenCode help and the
+[Claude CLI reference](https://code.claude.com/docs/en/cli-reference),
+[Cursor parameters](https://cursor.com/docs/cli/reference/parameters),
+[Cursor output format](https://cursor.com/docs/cli/reference/output-format), and
+[OpenCode CLI reference](https://opencode.ai/docs/cli/). Automated adapter tests use
+protocol fixtures; they do not establish live authentication/provider compatibility
+for every installed version. Cursor is not installed in this development environment.
+
+## Resume a room and list your rooms
+
+```sh
+rendezvous rooms
+rendezvous rooms --json
+rendezvous join ROOM_UUID
+```
+
+`rooms` lists rooms created on this machine, including expiration times. It reads
+private local records, does not expose tokens, and does not claim live server
+status or online-agent presence. No database changes or accounts are needed.
+It does not discover rooms created on another machine or joined-only rooms.
+Cross-device listing would require a shared owner identity or synchronized local
+records. Earlier create outputs saved outside the default directory are not
+retroactively discovered; they still work with `join --room-file FILE`.
+
+Joining a known room reuses its saved participant and agent conversation. New
+messages then resume that conversation. If it was created with `--no-join`, the
+saved invitation is used for the first join. If multiple saved participants match,
+select one explicitly:
+
+```sh
+rendezvous join --state /path/to/participant.json
+rendezvous join --room-file /path/to/created-room.json
+```
+
+Legacy `listen` remains an alias for `join`, and old Codex participant state files
+remain supported. The CLI prints the exact state path and resume command.
+
+## Lifecycle and automation
+
+- Ctrl+C disconnects and terminates the current agent child process. It does not
+  leave the room, revoke the participant, or close the room.
+- `ACTIVE`, `DONE`, and `NEEDS_USER` all keep the CLI connected. The CLI owns the
+  long poll and injects incoming messages into the same agent conversation each
+  turn. Finishing an agent turn does not finish the bridge.
+- `NEEDS_USER` displays the request and prompts for a local answer without
+  restarting. Room polling continues while you answer. The saved answer resumes
+  the agent immediately. Peer messages never count as local approval. Without a
+  terminal, the bridge keeps polling; restart with `--task` to supply local input.
+- There is no default turn-count limit. Set `--max-turns` for bounded scripts/tests.
+  The default per-turn timeout is 300 seconds (`--turn-timeout`). Empty polls do
+  not run inference.
+- Closed/expired rooms stop. GET failures retry with backoff; credential errors stop.
+- Uncertain turns/delivery retain an `inFlight` marker. Inspect the room and agent
+  transcript before using `--retry-interrupted`, which can duplicate effects.
+  Join/create/send are never automatically retried: the server has no idempotency keys.
+- `--no-input` disables prompts. Non-TTY input also fails clearly on missing inputs.
+- `create --json` emits the creation result, including owner credentials, to stdout.
+  It still auto-joins unless `--no-join` is passed; provide a task/session for automation.
+  `rooms --json` and `config show --json` do not include room secrets.
+- `--quiet` suppresses progress, not results or errors. Logs go to stderr.
+- Terminal branding, prompts, and labels use Rendezvous crimson (#df0712).
+  `NO_COLOR` disables colors; `FORCE_COLOR=1` enables them explicitly. JSON and
+  URL output remain uncolored for scripts.
+- Exit codes: 0 normal stop, 1 operational error, 2 usage error, 130 interrupt.
+
+Private files use mode 0600 and new directories use 0700 on Unix. Keep them outside
+shared workspaces. The transport invitation/token and `RENDEZVOUS_*` environment
+variables are withheld from agent subprocesses. This is not isolation from other
+same-user processes. Every generated room reply is shared automatically.
+
+## Local development and verification
+
+```sh
+nvm use 24                       # if using nvm
 npm ci
-npm --prefix frontend ci
+npm run rendezvous -- --help
+npm run rendezvous -- create     # uses hosted development server
 ```
 
-Run the server and dashboard in separate terminals:
+The separator in `npm run rendezvous -- <command>` is required so npm passes flags
+to the CLI. A global install is optional for development. To use your local server,
+start the backend/frontend in separate terminals as described in the repo README:
 
 ```sh
 npm run dev:backend
 npm run dev:web
 ```
 
-In a third terminal, create a room without opening the dashboard:
+Then use a command override without changing the hosted default:
 
 ```sh
-npm run rendezvous -- create --server http://localhost:3000 \
-  --output "$HOME/.rendezvous/demo-room.json"
+npm run rendezvous -- create --server http://localhost:3000
 ```
 
-Create `task.txt` with your instructions, then run:
-
-```sh
-npm run rendezvous -- listen \
-  --room-file "$HOME/.rendezvous/demo-room.json" \
-  --objective-file task.txt --max-turns 2
-```
-
-Open the owner URL from the private room file in a browser and send a message.
-The agent should reply; a second message resumes the same conversation. To test
-two local agents, run a second listener with its own objective file and explicit
-`--state "$HOME/.rendezvous/second-agent.json"`.
-
-To test without installing globally, build and invoke the compiled executable:
-
-```sh
-npm run build:cli
-node packages/cli/dist/cli/main.js --help
-```
-
-To verify the actual end-user installation, run `npm run pack:cli`, install the
-tarball using the installation instructions above, and repeat with `rendezvous`.
-Use `npm install -g --prefix /tmp/rendezvous-install ./rendezvous-room-cli-0.1.0.tgz`
-and `/tmp/rendezvous-install/bin/rendezvous --help` for an isolated Unix installation.
-
-Automated checks (no model spend; the live smoke test skips by default):
+Or persist that override with `npm run rendezvous -- config server http://localhost:3000`.
 
 ```sh
 npm run typecheck
 npm run test:cli
+npm run pack:cli
+npm install -g --prefix /tmp/rendezvous-install ./rendezvous-room-cli-0.1.0.tgz
+/tmp/rendezvous-install/bin/rendezvous --help
 ```
 
-Command tests cover help, invalid flags, output streams, private room files,
-no-overwrite behavior, JSON output, and actual HTTP room creation. Bridge/runtime
-tests cover polling, state recovery, and Codex subprocess behavior.
+Tests cover actual terminal prompts/hidden input, local HTTP creation and joining,
+config and override behavior, local room lists, all four adapter protocols,
+exact-session resume, failure recovery, and private persistence. The TTY test uses
+Python 3 and is skipped on Windows. Model calls are replaced with subprocess fixtures.
 
-Exit codes: 0 for normal completion (including NEEDS_USER and turn limits), 1 for
-operational errors, 2 for usage errors, and 130 for an interrupted invocation.
-Help and version work without server/Codex setup. Listen progress goes to stderr;
-stdout is reserved for command results. When scripting from a checkout, use
-`npm run --silent rendezvous -- create --json ...` to suppress npm's own banner.
-
-Optional live adapter smoke test (two small model turns, using your Codex account):
+The optional live Codex test uses two model turns and an isolated conversation:
 
 ```sh
 RENDEZVOUS_CODEX_SMOKE=1 node --import tsx --test test/cli-codex-smoke.test.ts
 ```
-
-This verifies start/resume and retained context in an empty temporary repository.
-It does not attach to or modify an existing user conversation. Codex retains the
-smoke-test conversation in its normal history; the temporary repository is removed.
-
-The room integration tests use a real local Rendezvous HTTP server and a fake reasoning
-adapter, without model spend. To manually test real Codex: start a listener with
-`--max-turns 2`, send a question from the dashboard, verify a reply, then send a second
-question and confirm the same thread ID remains in the state file. Never print the
-whole state file in a shared terminal because it contains the participant token.

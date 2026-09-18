@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import lockfile from "proper-lockfile";
 
+import type { Agent } from "./config.js";
+
 export interface BridgeState {
   version: 1;
   origin: string;
@@ -12,7 +14,10 @@ export interface BridgeState {
   objective: string;
   cursor: number;
   threadId?: string;
+  agent?: Agent;
   initialized: boolean;
+  pendingUser?: boolean;
+  userInput?: string;
   roster?: string;
   inFlight?: boolean;
 }

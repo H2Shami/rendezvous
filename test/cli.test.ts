@@ -59,7 +59,7 @@ test('HTTP room -> runtime -> reply -> idle -> resumed turn, without self-trigge
     const signal = AbortSignal.timeout(5000);
     const calls: (string | undefined)[] = [];
     let writes = 0;
-    await listen({ state, client, signal, save: async () => { writes++; }, log: () => {}, maxTurns: 3,
+    await listen({ state, client, signal, save: async () => { writes++; }, log: () => {}, maxTurns: 2,
       runtime: { run: async (prompt, thread, _signal, onThread) => {
         calls.push(thread); assert.ok(!prompt.includes(membership.participant_token));
         await onThread('dedicated-thread');
@@ -159,5 +159,49 @@ test('disconnect aborts a pending real HTTP long poll', async () => {
         runtime: { run: async () => { throw new Error('must not run'); } } });
     } finally { clearTimeout(timer); }
     assert.equal(state.cursor, 0); assert.equal(state.inFlight, undefined);
+  } finally { await f.stop(); }
+});
+
+test('persistent bridge keeps polling after NEEDS_USER and DONE, resumes peers and local answers', async () => {
+  const f = await fixture();
+  try {
+    const room = await f.create();
+    const joined = await f.service.join(room.session_id, { invite_token: room.invite_token }, 'persistent-test');
+    const state: BridgeState = { version: 1, origin: f.base, roomId: room.session_id,
+      participantId: joined.participant_id, token: joined.participant_token, workspace: '/tmp', objective: 'Coordinate', cursor: 0, initialized: false };
+    const client = new RoomClient(f.base, room.session_id, state.token);
+    let turns = 0;
+    let answer!: (value: string) => void;
+    const prompts: string[] = [];
+    await listen({ state, client, signal: AbortSignal.timeout(6000), save: async () => {}, log: () => {},
+      onNeedsUser: async () => {
+        const pending = new Promise<string>(resolve => { answer = resolve; });
+        await f.service.send(room.session_id, room.owner_token, { content: 'Peer follow-up while waiting for local approval.' });
+        return pending;
+      },
+      runtime: { run: async (prompt, thread, _signal, onThread) => {
+        prompts.push(prompt); turns++;
+        if (turns === 1) {
+          await onThread('persistent-session');
+          return { message: 'I need local approval.', status: 'NEEDS_USER' };
+        }
+        assert.equal(thread, 'persistent-session');
+        if (turns === 2) {
+          assert.match(prompt, /Peer follow-up/);
+          assert.match(prompt, /Waiting for local user input: true/);
+          answer('Approved locally: proceed with the review.');
+          return { message: 'Still waiting for my user.', status: 'ACTIVE' };
+        }
+        assert.equal(turns, 3);
+        assert.match(prompt, /Approved locally: proceed with the review/);
+        // Close after DONE to prove it is room lifecycle, not model status, that stops polling.
+        setTimeout(() => { void f.service.close(room.session_id, room.owner_token); }, 100);
+        return { message: 'Review coordinated.', status: 'DONE' };
+      } },
+    });
+    assert.equal(turns, 3);
+    assert.equal(state.pendingUser, false);
+    assert.equal(state.userInput, 'Approved locally: proceed with the review.');
+    assert.equal(state.inFlight, false);
   } finally { await f.stop(); }
 });
