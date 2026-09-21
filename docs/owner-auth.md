@@ -46,10 +46,51 @@ IAM permissions are needed by the app. Do not disable the flag on a populated
 stack without planning removal of the protected pool.
 
 Cognito's built-in email delivery has service limits. For a broader rollout,
-configure SES delivery and confirm quotas before relying on recovery mail. This
-PR does not deploy cloud resources or validate real mailbox delivery. Before
-launch, test signup, email confirmation, password reset, login and logout against
+configure SES delivery and confirm quotas before relying on recovery mail. The
+application infrastructure has not been deployed by this PR; the shared dev
+auth pool below was provisioned separately. Real mailbox delivery is not yet
+validated. Before launch, test signup, email confirmation, password reset, login and logout against
 the deployed stack and confirm that user-pool/account recovery settings work.
+
+## Shared development auth, local app and database
+
+The default local setup shares only Cognito. Frontend/backend run on the developer's
+machine; PostgreSQL/PGlite data stays local. Copy `.env.example` to `.env` on a new
+checkout (do not overwrite an existing configuration). It includes the public dev
+pool/client identifiers; they are not credentials and need no AWS console login.
+
+```sh
+npm ci
+npm --prefix frontend ci
+# Terminal 1, Node 22+:
+npm run dev:backend
+# Terminal 2:
+npm run dev:web
+```
+
+Open **http://localhost:3000/account**, then sign in or create a development account.
+Use localhost, not 127.0.0.1, for the browser URL: Cognito callback matching is exact.
+Leave `NGROK_DOMAIN` unset. The localhost client permits only
+`http://localhost:3000/api/v1/owner/callback` and `http://localhost:3000/account`.
+Omitting `DATABASE_URL` selects local PGlite; a localhost Docker PostgreSQL URL also
+works. Do not configure shared RDS or a shared database pepper for this setup.
+
+Accounts exist in shared dev Cognito, but each local database independently maps
+issuer/subject to an internal owner ID. Development accounts must not contain real
+customer data. Using the same Cognito login on another local database does not
+transfer agent records or local history.
+
+The existing pool is `us-east-2_5EYdg33zR` in AWS account `693067573106`, region
+`us-east-2`. Its historical AWS name is `rendezvous-local-auth`; it is tagged
+`Environment=dev`, `Usage=shared-development`. The public localhost client ID is
+`nig2tofm7fv8phbf7m1ebq2lg`. This pool/client was provisioned directly for development
+and is **not managed by the application Pulumi stack**. Do not enable that stack's
+Cognito creation expecting it to adopt this pool. A deployed dev app can get a
+separate HTTPS app client on this pool when needed; production stays separate.
+
+Administrators should import the pool/client/domain into a dedicated IaC stack
+before changing their lifecycle. Keep deletion protection enabled. Removing this
+pool breaks sign-in for all developers using the shared configuration.
 
 ## App-owned sessions and authorization
 
