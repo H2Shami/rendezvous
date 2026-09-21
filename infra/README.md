@@ -184,7 +184,8 @@ References: [RDS automated backups](https://docs.aws.amazon.com/AmazonRDS/latest
 Set `enableOwnerAuth=true`, `workosClientId`, and secret `workosApiKey` per stack.
 Use `pulumi config set --secret workosApiKey` interactively so the credential does
 not appear in shell history. The API key is stored in Secrets Manager and injected
-only into the backend. No Cognito pool or OAuth client secrets are provisioned.
+only into the backend. The existing TOKEN_PEPPER also derives the SDK cookie
+encryption key; keep it stable and shared across backend replicas. No Cognito pool or OAuth client secrets are provisioned.
 
 Local development and hosted dev use the same WorkOS staging environment and
 client ID; production uses a separate WorkOS production environment. Configure

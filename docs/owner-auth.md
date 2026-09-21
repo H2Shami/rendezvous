@@ -2,7 +2,7 @@
 
 WorkOS AuthKit handles email/password, Google, GitHub, verification, recovery and
 identity linking. Rendezvous maps the resulting stable WorkOS user ID to a local
-owner UUID and issues a revocable app session. One owner can later own many
+owner UUID and uses WorkOS-managed browser sessions. One owner can later own many
 agents; these accounts do not replace agent runtime keys or room capabilities.
 
 ## Local and hosted development
@@ -56,19 +56,21 @@ subject. We do not select or merge owners by email. The internal issuer namespac
 `https://api.workos.com/client/CLIENT_ID` separates environments; it is a database
 namespace, not a JWT issuer. Keep client ID stable within an environment.
 
-Migration 008 adds a non-credential provider session ID for WorkOS logout, changes
-login attempts to the WorkOS flow, and revokes legacy Cognito/direct-GitHub app
-sessions. Existing owner rows and their IDs/data are preserved. A WorkOS sign-in
-creates a new owner rather than silently attaching to an old test account.
-Existing test users must register/sign in through WorkOS; Cognito passwords and
-sessions are not imported. Before migrating accounts that own real agents/data,
-implement an explicit verified ownership transfer or controlled migration.
+Migration 006 creates owners and temporary login attempts. Since REN-6 has not
+been merged/deployed, fresh installations no longer create `owner_sessions`.
+Migration 008 drops that ephemeral table on databases that ran earlier PR
+revisions, switches attempts to WorkOS, and deletes unfinished legacy attempts.
+Existing owner rows and their IDs/data remain intact. All earlier opaque browser
+cookies require sign-in again; an existing WorkOS owner keeps its owner UUID.
+Cognito/direct-GitHub users receive a new WorkOS-backed owner rather than an
+automatic email-based ownership transfer. Before migrating accounts with real
+agents/data, implement an explicit verified ownership transfer.
 
 The previous shared dev Cognito pool `us-east-2_5EYdg33zR` was provisioned manually,
 not by Pulumi. This change leaves that cloud resource intact. Old OWNER_OIDC_*,
 OWNER_GOOGLE_ENABLED and direct GITHUB_CLIENT_* environment values are ignored.
 They can be removed after verifying the migration; retire unused cloud resources
-and credentials separately. Previously applied SQL migrations remain in the chain.
+and credentials separately.
 
 ## Session and authorization model
 
@@ -80,48 +82,60 @@ configured PUBLIC_URL, never caller-controlled Host headers. The backend consume
 the attempt atomically and exchanges the code directly with WorkOS using the
 backend API key and verifier. No automatic retries of the code exchange.
 
-The verified user from this authenticated server-to-server response is the
-identity. The returned token is decoded only for its WorkOS session ID used at
-logout; no caller-supplied token is accepted. Access/refresh/provider tokens and
-user email are not persisted. The provider session ID cannot authenticate a user.
+The WorkOS Node SDK seals access/refresh tokens and user information into an
+encrypted, authenticated HttpOnly cookie. The encryption password is derived with
+a domain-separated HMAC from the existing persistent TOKEN_PEPPER (or local server
+secret) and WorkOS client ID. No new deployment secret is required. Replicas must
+share TOKEN_PEPPER; rotating it invalidates cookies as well as existing capability
+hashes. Never rotate it merely to sign out a user.
 
-A successful login rotates the previous browser session and issues a random opaque
-cookie with an absolute seven-day expiry. Only a domain-separated digest is stored
-in Postgres. Cookies are HttpOnly, SameSite=Lax, path `/`, without Domain, and use
-Secure plus __Host names on HTTPS. HTTP is supported only for loopback development.
-No auth tokens are kept in localStorage or sessionStorage. `/me` never returns the
-provider session ID, cookies or provider credentials.
+On each authenticated request the SDK unseals the cookie and verifies the JWT
+signature and expiration. Expired/invalid JWTs trigger SDK refresh; a successful
+refresh replaces the browser cookie. Terminal refresh failures return 401;
+transient failures return a sanitized 503 and preserve the cookie for retry.
+Only verified users whose token subject matches the sealed user ID are accepted.
+Rendezvous then checks its owner record and disabled_at. Neither access/refresh
+tokens nor user profiles are stored in our database or returned by `/me`.
+
+Cookies are HttpOnly, SameSite=Lax, path `/`, without Domain, and use Secure plus
+__Host names on HTTPS. HTTP is supported only for loopback development. Cookie
+retention is 14 days, renewed on refresh; WorkOS controls the actual session
+lifetime and inactivity policy. `/me` reports the current access-token expiry,
+not an independent app-session lifetime. No auth tokens are kept in localStorage
+or sessionStorage. CSRF tokens are bound to the stable WorkOS session ID so token
+refresh does not invalidate an open page's CSRF token.
 
 | Endpoint under `/api/v1/owner` | Behavior |
 | --- | --- |
 | GET /config | Whether WorkOS is configured; no credentials |
 | GET /login | Start bound AuthKit sign-in; optional screen=sign-up |
-| GET /callback | Consume attempt, exchange code, issue app cookie |
+| GET /callback | Consume attempt, exchange code, set SDK-sealed cookie |
 | GET /me | Return internal owner ID, expiry and CSRF token |
-| POST /logout | Exact Origin + CSRF; revoke app session, clear cookies, return WorkOS logout URL |
+| POST /logout | Exact Origin + CSRF; revoke WorkOS session, clear cookies, return hosted logout URL |
 
 Old `/email/*` and `/github/*` endpoints are retired. The Next proxy preserves each
 Set-Cookie header. Login starts retain the existing 30/hour per-IP process-local
 limit; WorkOS handles hosted credential and email-delivery protections. Rate
 limits reset on process restart and are not shared across replicas yet.
 
-Future management routes must authenticate with OwnerService, scope every query
-by the principal's owner ID, and enforce same-origin + CSRF for writes. Submitted
+Future management routes must first authenticate through the WorkOS provider,
+resolve/check the local owner with OwnerService, scope every query by that owner
+ID, and enforce same-origin + CSRF for writes. Submitted
 owner IDs, agent keys and room tokens never authenticate as account principals.
 Agent CRUD is REN-7; the signed-in page remains an account confirmation for now.
 
 ## Logout and revocation boundaries
 
-Logout immediately revokes the app session in Postgres, clears its cookies, and
-redirects the browser to WorkOS logout with the saved session ID and configured
-return URL. If the remote redirect fails, the app session is still revoked.
+Logout calls the WorkOS revocation API, clears cookies only after success, and
+returns a hosted logout URL to end the provider's browser session too. A WorkOS
+outage returns 503 so the user can retry; it does not claim successful revocation.
 Browser logout does not revoke agent or room credentials.
 
-Set `owners.disabled_at` or revoke local owner_sessions for immediate app-side
-revocation. WorkOS logout/disable/password changes performed elsewhere do not yet
-push revocation into our independent seven-day sessions. Webhook synchronization
-or provider-managed session refresh is required before claiming that guarantee.
-No sliding session expiry. Cleanup deletes expired attempts/sessions.
+Already-issued access tokens remain valid until their expiration, even after
+WorkOS revocation. Subsequent refresh is denied. Configure a short access-token
+lifetime in WorkOS to bound this window; there is no independent seven-day app
+session anymore. Setting `owners.disabled_at` denies app access immediately on
+every request. Cleanup only removes expired login attempts.
 
 ## Deployment
 
@@ -134,19 +148,23 @@ introduced. Preview and deploy separately after registering the stack's URLs.
 Production must use its own WorkOS environment and HTTPS callbacks.
 
 The supplied WorkOS staging key has been validated and both local/hosted-dev
-callback URLs registered. The local app reaches hosted AuthKit with email, Google
-and GitHub available (staging uses WorkOS shared social credentials). Complete a
-real staging sign-in and verify logout/branding settings before rollout. No hosted
-application deployment is included in this change. Do not delete the old Cognito pool as part of this deployment.
+callback URLs registered. Real local GitHub sign-in, authenticated reload and the
+logout API have been verified. The final hosted logout redirect currently reports
+`app-homepage-url-not-found`: configure the staging Logout URIs/default return URL
+in the WorkOS dashboard, then repeat logout. Google and cross-provider linking
+still need live staging verification. No hosted application deployment is
+included. Do not delete the old Cognito pool as part of this deployment.
 
 ## Verification
 
 Tests exercise the real WorkOS SDK with a controlled HTTP transport: AuthKit URL,
 PKCE, state, code exchange, verified-user checks, safe logout, and linked methods
-mapping to one owner. Session tests cover expiry, revocation, CSRF, cross-owner
-checks, durable restart, migration and retired endpoints. Browser tests verify
-login/logout and independent cookies through Next's production proxy. Provider
-UI email delivery and actual cross-provider linking need a live staging test.
+mapping to one owner. Session tests exercise real SDK cookie encryption, JWT
+signatures, refresh,
+revocation at refresh, transient failures, CSRF, disabled/cross-owner checks,
+migration and retired endpoints. Browser tests verify
+login/logout, refreshed-cookie forwarding and independent browser contexts through
+Next's production proxy. Provider UI email delivery and actual cross-provider linking need a live staging test.
 
 References: [WorkOS Node SDK](https://workos.com/docs/sdks/node),
 [identity linking](https://workos.com/docs/authkit/identity-linking),

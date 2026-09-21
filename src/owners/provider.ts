@@ -1,14 +1,18 @@
 import { createHash } from 'node:crypto';
-import { WorkOS } from '@workos-inc/node';
+import { WorkOS, type User } from '@workos-inc/node';
 import { decodeJwt } from 'jose';
-import { requireThat } from '../validation.js';
+import { HttpError, requireThat } from '../validation.js';
 
 export interface LoginChecks { state: string; verifier: string }
 export type LoginScreen = 'sign-in' | 'sign-up';
+export interface OwnerIdentity {
+  issuer: string; subject: string; sessionId: string; expiresAt: Date; sealedSession?: string;
+}
 export interface IdentityProvider {
   authorize(checks: LoginChecks, screen?: LoginScreen): Promise<string>;
-  exchange(callback: URL, checks: LoginChecks): Promise<{ issuer: string; subject: string; sessionId?: string }>;
-  logoutUrl(sessionId?: string | null): string;
+  exchange(callback: URL, checks: LoginChecks): Promise<OwnerIdentity & { sealedSession: string }>;
+  authenticate(cookie: string): Promise<OwnerIdentity>;
+  logout(sessionId: string): Promise<string>;
 }
 export interface OwnerAuthConfig { apiKey: string; clientId: string; publicOrigin: string }
 export function ownerAuthConfig(env: NodeJS.ProcessEnv, publicOrigin: string): OwnerAuthConfig | undefined {
@@ -24,11 +28,10 @@ export function ownerAuthConfig(env: NodeJS.ProcessEnv, publicOrigin: string): O
   return { apiKey: values[0]!, clientId: values[1]!, publicOrigin };
 }
 
-/** All methods use hosted AuthKit; WorkOS links verified credentials to one user.
- * API tokens are used only during the server-to-server code exchange, never saved. */
+/** WorkOS owns the browser session; its SDK seals, validates and refreshes tokens. */
 export class WorkOSProvider implements IdentityProvider {
   private workos: WorkOS;
-  constructor(private settings: OwnerAuthConfig, workos?: WorkOS) {
+  constructor(private settings: OwnerAuthConfig, private cookiePassword: string, workos?: WorkOS) {
     this.workos = workos ?? new WorkOS(settings.apiKey, { clientId: settings.clientId, timeout: 10_000, maxRetries: 0 });
   }
   async authorize(checks: LoginChecks, screen: LoginScreen = 'sign-in') {
@@ -46,21 +49,44 @@ export class WorkOSProvider implements IdentityProvider {
       Boolean(callback.searchParams.get('code')), 'LOGIN_INVALID', 'Invalid sign-in callback.');
     const result = await this.workos.userManagement.authenticateWithCode({
       clientId: this.settings.clientId, code: callback.searchParams.get('code')!, codeVerifier: checks.verifier,
+      session: { sealSession: true, cookiePassword: this.cookiePassword },
     });
-    requireThat(result.user.emailVerified === true && /^user_[A-Za-z0-9]+$/.test(result.user.id),
-      'LOGIN_INVALID', 'A verified account is required.');
-    // This token comes directly from WorkOS's authenticated HTTPS API, not the browser.
-    // Authentication is the successful code exchange; decode only to retain its logout ID.
-    const { sid } = decodeJwt(result.accessToken);
-    requireThat(typeof sid === 'string' && /^session_[A-Za-z0-9]+$/.test(sid), 'LOGIN_INVALID', 'Invalid sign-in session.');
+    requireThat(result.sealedSession, 'LOGIN_INVALID', 'Invalid sign-in session.');
+    return { ...this.identity(result.user, result.accessToken), sealedSession: result.sealedSession };
+  }
+  private identity(user: User, accessToken: string): OwnerIdentity {
+    // Only SDK-verified tokens or authenticated code/refresh responses reach here.
+    const { sid, sub, exp } = decodeJwt(accessToken);
+    requireThat(user.emailVerified && /^user_[A-Za-z0-9]+$/.test(user.id) && sub === user.id &&
+      typeof sid === 'string' && /^session_[A-Za-z0-9]+$/.test(sid) && typeof exp === 'number',
+      'OWNER_UNAUTHORIZED', 'Sign in to continue.', 401);
     return {
       // Internal identity namespace, not a JWT issuer: separates WorkOS environments.
       issuer: `https://api.workos.com/client/${this.settings.clientId}`,
-      subject: result.user.id, sessionId: sid,
+      subject: user.id, sessionId: sid, expiresAt: new Date(exp * 1000),
     };
   }
-  logoutUrl(sessionId?: string | null) {
-    return sessionId ? this.workos.userManagement.getLogoutUrl({ sessionId, returnTo: `${this.settings.publicOrigin}/account` })
-      : `${this.settings.publicOrigin}/account`;
+  async authenticate(cookie: string): Promise<OwnerIdentity> {
+    try {
+      const session = this.workos.userManagement.loadSealedSession({ sessionData: cookie, cookiePassword: this.cookiePassword });
+      const result = await session.authenticate();
+      if (result.authenticated) return this.identity(result.user, result.accessToken);
+      requireThat(result.reason === 'invalid_jwt', 'OWNER_UNAUTHORIZED', 'Sign in to continue.', 401);
+      const refreshed = await session.refresh();
+      if (!refreshed.authenticated && refreshed.retryable)
+        throw new HttpError('AUTH_UNAVAILABLE', 'Sign-in is temporarily unavailable. Please try again.', 503);
+      requireThat(refreshed.authenticated && refreshed.session && refreshed.sealedSession,
+        'OWNER_UNAUTHORIZED', 'Sign in to continue.', 401);
+      return { ...this.identity(refreshed.session.user, refreshed.session.accessToken), sealedSession: refreshed.sealedSession };
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      // Never expose provider errors, tokens or decrypted cookie contents.
+      throw new HttpError('AUTH_UNAVAILABLE', 'Sign-in is temporarily unavailable. Please try again.', 503);
+    }
+  }
+  async logout(sessionId: string) {
+    try { await this.workos.userManagement.revokeSession({ sessionId }); }
+    catch { throw new HttpError('AUTH_UNAVAILABLE', 'Unable to sign out. Please try again.', 503); }
+    return this.workos.userManagement.getLogoutUrl({ sessionId, returnTo: `${this.settings.publicOrigin}/account` });
   }
 }

@@ -32,13 +32,14 @@ are deferred. No fresh conversation per message and no standalone job/result API
 
 ## Identity and authentication
 
-User-confirmed decision: accounts with sign-in manage agents. Use a managed
-identity provider mapped by stable issuer/subject to an internal owner UUID and
-revocable application sessions. REN-6 selects WorkOS AuthKit hosted sign-in and verified identity linking. Use Secure, HttpOnly,
-SameSite=Lax cookies, CSRF protection, callback binding, and supported recovery;
-do not build password storage or merge accounts only by matching email. Allow
-non-Secure cookies only in loopback development. Proposed management session
-lifetime is seven days with absolute expiry; logout revokes the session.
+User-confirmed decision: accounts with sign-in manage agents. REN-6 uses WorkOS
+AuthKit for hosted sign-in, verified identity linking, and SDK-managed browser
+sessions. Map the stable provider user ID to an internal owner UUID. Use Secure,
+HttpOnly, SameSite=Lax cookies, CSRF protection, callback binding, and supported
+recovery; do not build password storage or merge accounts by matching email.
+Allow non-Secure cookies only in loopback development. WorkOS controls session
+lifetime and refresh; revocation is enforced when an access token expires and
+refresh is attempted. Local owner disabling denies management access immediately.
 
 Agent runtime keys are separate from browser sessions and existing room tokens.
 Browser logout does not disconnect agents. Account disabling fences its agents.
@@ -67,7 +68,7 @@ Proposed additions, with final SQL in the implementation tickets:
 
 | Model | Purpose |
 | --- | --- |
-| owners, owner_sessions | Sign-in identity and revocable management sessions |
+| owners | Local ownership linked to a WorkOS user; browser sessions managed by WorkOS |
 | agents | UUID PK, owner FK, name, timestamps, disabled_at |
 | agent_credentials | Credential ID, agent FK, digest, issued/revoked timestamps |
 | agent_receivers | Agent FK, lease UUID, generation, credential FK, expiry, accepting_sessions |

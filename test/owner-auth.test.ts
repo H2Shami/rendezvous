@@ -1,57 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture } from './helpers.js';
-import { OwnerService, OWNER_SESSION_MS } from '../src/owners/service.js';
-import { ownerAuthConfig, type IdentityProvider, type LoginChecks } from '../src/owners/provider.js';
+import { OwnerService } from '../src/owners/service.js';
+import { ownerAuthConfig } from '../src/owners/provider.js';
 import { secret, uuid } from '../src/validation.js';
+import { workosFixture } from './workos-fixture.js';
 
 const origin = 'https://app.example';
-function fakeProvider() {
-  let checks: LoginChecks;
-  const provider: IdentityProvider = {
-    async authorize(c) { checks = { state: c.state, verifier: c.verifier }; return `https://login.example/authorize?state=${c.state}`; },
-    async exchange(url, c) {
-      assert.deepEqual(c, checks);
-      assert.equal(url.origin, origin);
-      if (url.searchParams.get('code') !== 'valid') throw new Error('PRIVATE_TOKEN_AND_CODE');
-      return { issuer: 'https://issuer.example', subject: 'user-1', sessionId: 'session_fake' };
-    },
-    logoutUrl: (sessionId) => { assert.equal(sessionId, 'session_fake'); return 'https://login.example/logout'; },
-  };
-  return provider;
-}
-
-test('owner sessions are durable, expire absolutely, rotate, revoke and enforce principal ownership', async () => {
-  const f = await fixture();
-  const owners = new OwnerService(f.db, f.auth, f.now);
+test('owners retain stable identity, enforce ownership and disable access independently of WorkOS', async () => {
+  const f = await fixture(); const owners = new OwnerService(f.db, f.auth, f.now);
   const issuer = `https://${uuid()}.example`;
-  const ids: string[] = [];
   try {
-    const a = await owners.establish(issuer, 'a'); ids.push(a.ownerId);
-    const b = await owners.establish(issuer, 'b'); ids.push(b.ownerId);
-    assert.notEqual(a.ownerId, b.ownerId);
-    const principal = await new OwnerService(f.db, f.auth, f.now).authenticate(a.token);
-    owners.requireOwnership(principal, a.ownerId);
-    assert.throws(() => owners.requireOwnership(principal, b.ownerId), { code: 'NOT_FOUND' });
-    const hashes = await f.db.query<{ token_hash: string }>('SELECT token_hash FROM owner_sessions WHERE owner_id=$1', [a.ownerId]);
-    assert.notEqual(hashes.rows[0].token_hash, a.token);
-    const rotated = await owners.establish(issuer, 'a', a.token);
-    assert.equal(rotated.ownerId, a.ownerId);
-    await assert.rejects(owners.authenticate(a.token), { code: 'OWNER_UNAUTHORIZED' });
-    assert.throws(() => owners.checkCsrf(rotated.token, owners.csrf(b.token)), { code: 'CSRF_INVALID' });
-    owners.checkCsrf(rotated.token, owners.csrf(rotated.token));
-    await owners.revoke(b.token);
-    await assert.rejects(owners.authenticate(b.token), { code: 'OWNER_UNAUTHORIZED' });
-    f.advance(OWNER_SESSION_MS);
-    await assert.rejects(owners.authenticate(rotated.token), { code: 'OWNER_UNAUTHORIZED' });
-    const disabled = await owners.establish(issuer, 'a');
-    await f.db.query('UPDATE owners SET disabled_at=now() WHERE id=$1', [a.ownerId]);
-    await assert.rejects(owners.authenticate(disabled.token), { code: 'OWNER_UNAUTHORIZED' });
+    const a = await owners.establish(issuer, 'a'), b = await owners.establish(issuer, 'b');
+    assert.notEqual(a.id, b.id);
+    assert.equal((await owners.establish(issuer, 'a')).id, a.id);
+    const principal = await new OwnerService(f.db, f.auth, f.now).authenticate(issuer, 'a');
+    owners.requireOwnership(principal, a.id);
+    assert.throws(() => owners.requireOwnership(principal, b.id), { code: 'NOT_FOUND' });
+    assert.throws(() => owners.checkCsrf('session_a', owners.csrf('session_b')), { code: 'CSRF_INVALID' });
+    owners.checkCsrf('session_a', owners.csrf('session_a'));
+    await f.db.query('UPDATE owners SET disabled_at=now() WHERE id=$1', [a.id]);
+    await assert.rejects(owners.authenticate(issuer, 'a'), { code: 'OWNER_UNAUTHORIZED' });
     await assert.rejects(owners.establish(issuer, 'a'), { code: 'OWNER_DISABLED' });
-  } finally {
-    for (const id of ids) await f.db.query('DELETE FROM owners WHERE id=$1', [id]);
-    await f.stop();
-  }
+  } finally { await f.db.query('DELETE FROM owners WHERE issuer=$1', [issuer]); await f.stop(); }
 });
 
 test('login attempts are browser-bound, expire, and can be consumed only once under concurrency', async () => {
@@ -69,7 +40,8 @@ test('login attempts are browser-bound, expire, and can be consumed only once un
 
 test('browser login/callback/logout use separate secure cookies, CSRF and sanitized errors', async () => {
   const logs: unknown[] = [];
-  const f = await fixture({ publicUrl: origin, ownerProvider: fakeProvider(), logger: e => logs.push(e) });
+  const workos = await workosFixture(origin);
+  const f = await fixture({ publicUrl: origin, ownerProvider: workos.provider, logger: e => logs.push(e) });
   const call = (path: string, init: RequestInit = {}) => fetch(`${f.base}/api/v1/owner/${path}`, { ...init, redirect: 'manual' });
   let ownerId: string | undefined;
   try {
@@ -98,9 +70,17 @@ test('browser login/callback/logout use separate secure cookies, CSRF and saniti
     assert.equal((await call('logout', { method: 'POST', headers: { Cookie: authCookie } })).status, 403);
     assert.equal((await call('logout', { method: 'POST', headers: { Cookie: authCookie, Origin: origin } })).status, 403);
     assert.equal((await call('logout', { method: 'POST', headers: { Cookie: authCookie, Origin: 'https://evil.example', 'X-CSRF-Token': me.csrf_token } })).status, 403);
+    workos.state.logoutFails = true;
+    const unavailable = await call('logout', { method: 'POST', headers: { Cookie: authCookie, Origin: origin, 'X-CSRF-Token': me.csrf_token } });
+    assert.equal(unavailable.status, 503); assert.equal(unavailable.headers.getSetCookie().length, 0);
+    assert.doesNotMatch(await unavailable.text(), /PRIVATE|refreshToken|accessToken/);
+    workos.state.logoutFails = false;
     const logout = await call('logout', { method: 'POST', headers: { Cookie: authCookie, Origin: origin, 'X-CSRF-Token': me.csrf_token } });
-    assert.equal(logout.status, 200); assert.equal((await logout.json()).logout_url, 'https://login.example/logout');
-    assert.equal((await call('me', { headers: { Cookie: authCookie } })).status, 401);
+    assert.equal(logout.status, 200); assert.equal(new URL((await logout.json()).logout_url).searchParams.get('session_id'), workos.sessionId);
+    assert.equal(workos.state.revocations, 1);
+    assert.match(logout.headers.getSetCookie().find(c => c.startsWith('__Host-rv-owner='))!, /Expires=Thu, 01 Jan 1970/);
+    // An already-issued access token remains valid until expiry; WorkOS denies its next refresh.
+    assert.equal((await call('me', { headers: { Cookie: authCookie } })).status, 200);
     assert.doesNotMatch(JSON.stringify(logs), new RegExp(`${state}|PRIVATE_TOKEN_AND_CODE|csrf_token|code=valid`));
   } finally {
     if (ownerId) await f.db.query('DELETE FROM owners WHERE id=$1', [ownerId]);
@@ -121,34 +101,9 @@ test('owner auth is explicitly configured and rejects unsafe origins/provider UR
   finally { await f.stop(); }
 });
 
-test('owner identity and session survive database reopen and idempotent migrations', async () => {
-  const { openDatabase } = await import('../src/db.js');
-  const { security } = await import('../src/security.js');
-  const { mkdtemp, rm } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-  const dir = await mkdtemp(join(tmpdir(), 'owner-auth-restart-'));
-  const config = { databaseUrl: process.env.TEST_DATABASE_URL, dataDir: join(dir, 'db') };
-  const auth = security({ pepper: secret() });
-  let db = await openDatabase(config);
-  let id: string | undefined;
-  try {
-    const original = await new OwnerService(db, auth).establish(`https://${uuid()}.example`, 'restart-user');
-    id = original.ownerId;
-    await db.close();
-    db = await openDatabase(config);
-    const restored = new OwnerService(db, auth);
-    assert.equal((await restored.authenticate(original.token)).id, id);
-    await restored.revoke(original.token);
-    await assert.rejects(restored.authenticate(original.token), { code: 'OWNER_UNAUTHORIZED' });
-  } finally {
-    if (id) await db.query('DELETE FROM owners WHERE id=$1', [id]);
-    await db.close(); await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test('legacy provider routes are retired and stale attempts cannot authenticate through WorkOS', async () => {
-  const f = await fixture({ publicUrl:origin, ownerProvider:fakeProvider() });
+  const workos = await workosFixture(origin);
+  const f = await fixture({ publicUrl:origin, ownerProvider:workos.provider });
   const owners = new OwnerService(f.db,f.auth,f.now);
   const call = (path: string, cookie = '') => fetch(`${f.base}/api/v1/owner/${path}`, {redirect:'manual',headers:{Cookie:cookie}});
   try {
@@ -162,19 +117,16 @@ test('legacy provider routes are retired and stale attempts cannot authenticate 
   } finally { await f.stop(); }
 });
 
-test('WorkOS migration retires legacy sessions while preserving owners and WorkOS sessions', async () => {
-  const f = await fixture(); const owners = new OwnerService(f.db,f.auth,f.now);
-  const subject = uuid();
-  const old = await owners.establish('https://github.com',subject);
-  const current = await owners.establish('https://api.workos.com/client/client_test',subject,'','session_test');
+test('migration removes earlier PR session storage, preserves owners and can be reapplied', async () => {
+  const f = await fixture(); const owners = new OwnerService(f.db, f.auth, f.now);
+  const old = await owners.establish('https://github.com', uuid());
   try {
+    await f.db.exec('CREATE TABLE owner_sessions(id uuid PRIMARY KEY, owner_id uuid REFERENCES owners(id))');
+    await f.db.query('INSERT INTO owner_sessions VALUES($1,$2)', [uuid(), old.id]);
     const { readFile } = await import('node:fs/promises');
-    const sql = await readFile(new URL('../migrations/008_workos_auth.sql',import.meta.url),'utf8');
+    const sql = await readFile(new URL('../migrations/008_workos_auth.sql', import.meta.url), 'utf8');
     await f.db.exec(sql); await f.db.exec(sql);
-    await assert.rejects(owners.authenticate(old.token),{code:'OWNER_UNAUTHORIZED'});
-    assert.equal((await owners.authenticate(current.token)).provider_session_id,'session_test');
-    assert.equal((await f.db.query('SELECT id FROM owners WHERE id=$1',[old.ownerId])).rows.length,1);
-  } finally {
-    await f.db.query('DELETE FROM owners WHERE id=$1 OR id=$2',[old.ownerId,current.ownerId]); await f.stop();
-  }
+    assert.equal((await f.db.query('SELECT id FROM owners WHERE id=$1', [old.id])).rows.length, 1);
+    assert.equal((await f.db.query("SELECT table_name FROM information_schema.tables WHERE table_name='owner_sessions'")).rows.length, 0);
+  } finally { await f.db.query('DELETE FROM owners WHERE id=$1', [old.id]); await f.stop(); }
 });

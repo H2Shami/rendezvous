@@ -67,4 +67,4 @@ migrations are added by REN-5.
   discovery, hosted runners, custom Docker hosting, and SDK publication are
   deferred. Basic session-bound conversations and output routing remain in scope.
 
-REN-6 implements WorkOS AuthKit hosted sign-in, verified identity linking, and app-owned sessions. This replaces the initial Cognito plus direct GitHub implementation at the user’s request. REN-7 onward implement the contract.
+REN-6 implements WorkOS AuthKit hosted sign-in, verified identity linking, and SDK-managed WorkOS browser sessions. Rendezvous retains owner identity/authorization and short-lived, single-use login attempts; it does not issue an independent browser session. This replaces the initial Cognito plus direct GitHub implementation at the user’s request. REN-7 onward implement the contract.

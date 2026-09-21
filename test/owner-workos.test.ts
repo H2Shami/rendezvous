@@ -1,78 +1,89 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { WorkOS } from '@workos-inc/node';
 import { WorkOSProvider } from '../src/owners/provider.js';
 import { OwnerService } from '../src/owners/service.js';
 import { fixture } from './helpers.js';
-import { uuid } from '../src/validation.js';
+import { workosFixture } from './workos-fixture.js';
+import { secret } from '../src/validation.js';
 
-const origin = 'http://localhost:3000';
-const checks = {state:'s'.repeat(43),verifier:'v'.repeat(64)};
-const token = (sid: unknown) => `${Buffer.from('{"alg":"RS256"}').toString('base64url')}.${Buffer.from(JSON.stringify({sid})).toString('base64url')}.c2lnbmF0dXJl`;
+const checks = { state: 's'.repeat(43), verifier: 'v'.repeat(64) };
 
-test('WorkOS SDK uses AuthKit, state, PKCE and server-side credentials; callbacks fail closed', async () => {
-  let calls = 0, verified = true, sessionId: unknown = 'session_test', fail = false;
-  const sdk = new WorkOS('sk_test_secret', {clientId:'client_test',maxRetries:0,fetchFn:async (input,init) => {
-    calls++;
-    assert.equal(String(input),'https://api.workos.com/user_management/authenticate');
-    const body = JSON.parse(String(init?.body));
-    assert.equal(body.client_id,'client_test');
-    assert.equal(body.client_secret,'sk_test_secret');
-    assert.equal(body.code_verifier,checks.verifier);
-    assert.equal(body.code,'one-time-code');
-    return fail ? Response.json({message:'PRIVATE_PROVIDER_ERROR',error:'invalid_grant'},{status:400}) : Response.json({
-      user:{object:'user',id:'user_test',email:'owner@example.com',email_verified:verified,created_at:'2026-01-01',updated_at:'2026-01-01'},
-      access_token:token(sessionId),refresh_token:'PRIVATE_REFRESH_TOKEN',authentication_method:'GitHubOAuth',
-    });
-  }});
-  const provider = new WorkOSProvider({apiKey:'sk_test_secret',clientId:'client_test',publicOrigin:origin},sdk);
+test('WorkOS SDK seals code exchange, validates JWTs and fails closed on invalid callbacks or cookies', async () => {
+  const w = await workosFixture();
+  const { provider } = w;
   const url = new URL(await provider.authorize(checks));
-  assert.equal(url.origin,'https://api.workos.com');
-  assert.equal(url.searchParams.get('provider'),'authkit');
-  assert.equal(url.searchParams.get('state'),checks.state);
-  assert.equal(url.searchParams.get('code_challenge'),createHash('sha256').update(checks.verifier).digest('base64url'));
-  assert.equal(url.searchParams.get('redirect_uri'),`${origin}/api/v1/owner/callback`);
-  assert.equal(new URL(await provider.authorize(checks,'sign-up')).searchParams.get('screen_hint'),'sign-up');
-  const callback = () => new URL(`${origin}/api/v1/owner/callback?state=${checks.state}&code=one-time-code`);
-  const identity = await provider.exchange(callback(),checks);
-  assert.deepEqual(identity,{issuer:'https://api.workos.com/client/client_test',subject:'user_test',sessionId:'session_test'});
+  assert.equal(url.origin, 'https://api.workos.com');
+  assert.equal(url.searchParams.get('provider'), 'authkit');
+  assert.equal(url.searchParams.get('state'), checks.state);
+  assert.equal(url.searchParams.get('code_challenge'), createHash('sha256').update(checks.verifier).digest('base64url'));
+  assert.equal(url.searchParams.get('redirect_uri'), `${w.settings.publicOrigin}/api/v1/owner/callback`);
+  assert.equal(new URL(await provider.authorize(checks, 'sign-up')).searchParams.get('screen_hint'), 'sign-up');
+  const identity = await provider.exchange(w.callback(checks.state), checks);
+  assert.equal(w.state.codeVerifier, checks.verifier);
+  assert.equal(identity.subject, w.userId);
+  assert.doesNotMatch(identity.sealedSession, /PRIVATE|owner@example|accessToken|refreshToken/);
+  assert.equal((await provider.authenticate(identity.sealedSession)).subject, w.userId);
   for (const bad of [
-    new URL(`${origin}/api/v1/owner/callback?state=wrong&code=one-time-code`),
-    new URL(`${callback()}&state=duplicate`),new URL(`${callback()}&code=duplicate`),
-    new URL(`${callback()}&error=access_denied`),
-    new URL(`https://evil.example/api/v1/owner/callback?state=${checks.state}&code=one-time-code`),
-  ]) await assert.rejects(provider.exchange(bad,checks),{code:'LOGIN_INVALID'});
-  assert.equal(calls,1);
-  verified = false;
-  await assert.rejects(provider.exchange(callback(),checks),{code:'LOGIN_INVALID'});
-  verified = true; sessionId = undefined;
-  await assert.rejects(provider.exchange(callback(),checks),{code:'LOGIN_INVALID'});
-  fail = true;
-  await assert.rejects(provider.exchange(callback(),checks));
-  const logout = new URL(provider.logoutUrl('session_test'));
-  assert.equal(logout.searchParams.get('session_id'),'session_test');
-  assert.equal(logout.searchParams.get('return_to'),`${origin}/account`);
-  assert.equal(provider.logoutUrl(),`${origin}/account`);
-  assert.doesNotMatch(JSON.stringify(identity),/PRIVATE|email|accessToken|refreshToken/);
+    w.callback('wrong'), new URL(`${w.callback(checks.state)}&state=duplicate`),
+    new URL(`${w.callback(checks.state)}&code=duplicate`), new URL(`${w.callback(checks.state)}&error=access_denied`),
+    new URL(`https://evil.example/api/v1/owner/callback?state=${checks.state}&code=valid`),
+  ]) await assert.rejects(provider.exchange(bad, checks), { code: 'LOGIN_INVALID' });
+  assert.equal(w.state.exchanges, 1);
+  for (const cookie of ['', secret(), `${identity.sealedSession.slice(0, 40)}x${identity.sealedSession.slice(41)}`])
+    await assert.rejects(provider.authenticate(cookie), { code: 'OWNER_UNAUTHORIZED' });
+  const wrongKey = new WorkOSProvider(w.settings, secret(), w.sdk);
+  await assert.rejects(wrongKey.authenticate(identity.sealedSession), { code: 'OWNER_UNAUTHORIZED' });
+  // A valid encrypted envelope does not bypass token signature validation.
+  w.state.corruptToken = true;
+  const corrupt = await provider.exchange(w.callback(checks.state), checks);
+  await assert.rejects(provider.authenticate(corrupt.sealedSession), { code: 'OWNER_UNAUTHORIZED' });
+  w.state.corruptToken = false;
+  w.state.verified = false;
+  await assert.rejects(provider.exchange(w.callback(checks.state), checks), { code: 'OWNER_UNAUTHORIZED' });
+  w.state.verified = true; w.state.subject = 'user_someoneelse';
+  await assert.rejects(provider.exchange(w.callback(checks.state), checks), { code: 'OWNER_UNAUTHORIZED' });
 });
 
-test('linked password, Google and GitHub credentials map to the same internal owner', async () => {
-  const userId = `user_${uuid().replaceAll('-','')}`;
-  let method = 'Password';
-  const sdk = new WorkOS('sk_test_secret',{maxRetries:0,fetchFn:async()=>Response.json({
-    user:{object:'user',id:userId,email:'owner@example.com',email_verified:true,created_at:'2026-01-01',updated_at:'2026-01-01'},
-    access_token:token('session_test'),refresh_token:'PRIVATE_REFRESH_TOKEN',authentication_method:method,
-  })});
-  const provider = new WorkOSProvider({apiKey:'sk_test_secret',clientId:'client_test',publicOrigin:origin},sdk);
-  const f = await fixture(); const service = new OwnerService(f.db,f.auth,f.now);
-  const owners: string[] = [];
+test('WorkOS refresh persists renewed cookies, preserves session identity, and enforces revocation on refresh', async () => {
+  const w = await workosFixture(); w.state.lifetime = -60;
+  const expired = await w.provider.exchange(w.callback(checks.state), checks);
+  const refreshed = await w.provider.authenticate(expired.sealedSession);
+  assert.ok(refreshed.sealedSession); assert.notEqual(refreshed.sealedSession, expired.sealedSession);
+  assert.equal(refreshed.sessionId, expired.sessionId); assert.ok(refreshed.expiresAt.getTime() > Date.now());
+  assert.equal(w.state.refreshes, 1);
+  await w.provider.authenticate(refreshed.sealedSession);
+  assert.equal(w.state.refreshes, 1);
+  const logout = new URL(await w.provider.logout(refreshed.sessionId));
+  assert.equal(logout.searchParams.get('return_to'), `${w.settings.publicOrigin}/account`);
+  assert.equal(w.state.revocations, 1);
+  await assert.rejects(w.provider.authenticate(expired.sealedSession), { code: 'OWNER_UNAUTHORIZED' });
+  // Access tokens are locally validated until their short expiry, including after logout.
+  assert.equal((await w.provider.authenticate(refreshed.sealedSession)).sessionId, w.sessionId);
+});
+
+test('transient WorkOS refresh/logout failures are retryable and never expose credentials', async () => {
+  const w = await workosFixture(); w.state.lifetime = -60;
+  const expired = await w.provider.exchange(w.callback(checks.state), checks);
+  w.state.refreshStatus = 503;
+  await assert.rejects(w.provider.authenticate(expired.sealedSession), { code: 'AUTH_UNAVAILABLE', status: 503 });
+  w.state.refreshStatus = 200;
+  assert.ok((await w.provider.authenticate(expired.sealedSession)).sealedSession);
+  w.state.logoutFails = true;
+  await assert.rejects(w.provider.logout(w.sessionId), { code: 'AUTH_UNAVAILABLE', status: 503 });
+  assert.equal(w.state.revoked, false);
+});
+
+test('linked password, Google and GitHub credentials map to one owner without local sessions', async () => {
+  const w = await workosFixture(), f = await fixture();
+  const owners = new OwnerService(f.db, f.auth, f.now), ids: string[] = [];
   try {
-    for (method of ['Password','GoogleOAuth','GitHubOAuth']) {
-      const identity = await provider.exchange(new URL(`${origin}/api/v1/owner/callback?state=${checks.state}&code=one-time-code`),checks);
-      owners.push((await service.establish(identity.issuer,identity.subject,'',identity.sessionId)).ownerId);
+    for (const method of ['Password', 'GoogleOAuth', 'GitHubOAuth']) {
+      w.state.method = method;
+      const identity = await w.provider.exchange(w.callback(checks.state), checks);
+      ids.push((await owners.establish(identity.issuer, identity.subject)).id);
     }
-    assert.equal(new Set(owners).size,1);
-    assert.equal((await f.db.query('SELECT id FROM owners WHERE subject=$1',[userId])).rows.length,1);
-  } finally { await f.db.query('DELETE FROM owners WHERE subject=$1',[userId]); await f.stop(); }
+    assert.equal(new Set(ids).size, 1);
+    assert.equal((await f.db.query("SELECT table_name FROM information_schema.tables WHERE table_name='owner_sessions'")).rows.length, 0);
+  } finally { await f.db.query('DELETE FROM owners WHERE issuer=$1', [w.issuer]); await f.stop(); }
 });

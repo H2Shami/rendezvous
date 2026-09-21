@@ -71,7 +71,7 @@ async function main() {
     });
     const ownerConfig = ownerAuthConfig(process.env, publicUrl);
     app = createApplication(service, {
-      ownerProvider: ownerConfig ? new WorkOSProvider(ownerConfig) : undefined,
+      ownerProvider: ownerConfig ? new WorkOSProvider(ownerConfig, service.auth.digest(`owner:workos-cookie:${ownerConfig.clientId}`)) : undefined,
       publicUrl,
       frontendOrigin: process.env.FRONTEND_URL || process.env.NGROK_DOMAIN,
       trustProxy: process.env.TRUST_PROXY || false,

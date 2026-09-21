@@ -2,9 +2,8 @@ import { one, type Database } from '../db.js';
 import type { Security } from '../security.js';
 import { requireThat, secret, uuid } from '../validation.js';
 
-export const OWNER_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 export const LOGIN_MS = 10 * 60 * 1000;
-export interface OwnerPrincipal { id: string; session_id: string; expires_at: Date; provider_session_id: string | null }
+export interface OwnerPrincipal { id: string }
 
 export class OwnerService {
   constructor(readonly db: Database, private auth: Security, private clock = Date.now) {}
@@ -27,31 +26,18 @@ export class OwnerService {
     requireThat(row, 'LOGIN_INVALID', 'Sign-in expired or invalid. Please start again.', 400);
     return this.checks(browser);
   }
-  async establish(issuer: string, subject: string, previousToken = '', providerSessionId?: string) {
-    requireThat(issuer.length > 0 && subject.length > 0 && subject.length <= 1024, 'LOGIN_INVALID', 'Invalid sign-in identity.', 400);
-    const token = secret(), sessionId = uuid(), now = new Date(this.clock());
-    const expires = new Date(this.clock() + OWNER_SESSION_MS);
-    const ownerId = await this.db.transaction(async tx => {
-      // Same email is intentionally irrelevant; the provider's stable issuer/sub is identity.
-      const owner = await one<{ id: string; disabled_at: Date | null }>(tx,
-        `INSERT INTO owners(id,issuer,subject) VALUES($1,$2,$3)
-         ON CONFLICT(issuer,subject) DO UPDATE SET subject=EXCLUDED.subject RETURNING id,disabled_at`,
-        [uuid(), issuer, subject]);
-      requireThat(owner && !owner.disabled_at, 'OWNER_DISABLED', 'Account is disabled.', 403);
-      if (previousToken) await tx.query('UPDATE owner_sessions SET revoked_at=$1 WHERE token_hash=$2 AND revoked_at IS NULL',
-        [now, this.digest('session', previousToken)]);
-      await tx.query('INSERT INTO owner_sessions(id,owner_id,token_hash,created_at,expires_at,provider_session_id) VALUES($1,$2,$3,$4,$5,$6)',
-        [sessionId, owner.id, this.digest('session', token), now, expires, providerSessionId ?? null]);
-      return owner.id;
-    });
-    return { token, ownerId, expires };
+  async establish(issuer: string, subject: string): Promise<OwnerPrincipal> {
+    // Identity comes only from WorkOS; matching email is never proof of ownership.
+    const owner = await one<{ id: string; disabled_at: Date | null }>(this.db,
+      `INSERT INTO owners(id,issuer,subject) VALUES($1,$2,$3)
+       ON CONFLICT(issuer,subject) DO UPDATE SET subject=EXCLUDED.subject RETURNING id,disabled_at`,
+      [uuid(), issuer, subject]);
+    requireThat(owner && !owner.disabled_at, 'OWNER_DISABLED', 'Account is disabled.', 403);
+    return { id: owner.id };
   }
-  async authenticate(token: string): Promise<OwnerPrincipal> {
-    requireThat(/^[A-Za-z0-9_-]{43}$/.test(token), 'OWNER_UNAUTHORIZED', 'Sign in to continue.', 401);
+  async authenticate(issuer: string, subject: string): Promise<OwnerPrincipal> {
     const owner = await one<OwnerPrincipal>(this.db,
-      `SELECT o.id,s.id AS session_id,s.expires_at,s.provider_session_id FROM owner_sessions s JOIN owners o ON o.id=s.owner_id
-       WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>$2 AND o.disabled_at IS NULL`,
-      [this.digest('session', token), new Date(this.clock())]);
+      'SELECT id FROM owners WHERE issuer=$1 AND subject=$2 AND disabled_at IS NULL', [issuer, subject]);
     requireThat(owner, 'OWNER_UNAUTHORIZED', 'Sign in to continue.', 401);
     return owner;
   }
@@ -63,12 +49,7 @@ export class OwnerService {
   requireOwnership(principal: OwnerPrincipal, resourceOwnerId: string) {
     requireThat(principal.id === resourceOwnerId, 'NOT_FOUND', 'Resource not found.', 404);
   }
-  async revoke(token: string) {
-    await this.db.query('UPDATE owner_sessions SET revoked_at=$1 WHERE token_hash=$2 AND revoked_at IS NULL',
-      [new Date(this.clock()), this.digest('session', token)]);
-  }
   async cleanup() {
     await this.db.query('DELETE FROM owner_login_attempts WHERE expires_at<=$1', [new Date(this.clock())]);
-    await this.db.query('DELETE FROM owner_sessions WHERE expires_at<=$1 OR revoked_at IS NOT NULL', [new Date(this.clock())]);
   }
 }

@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { fixture } from '../test/helpers.js';
-import { uuid } from '../src/validation.js';
+import { workosFixture } from '../test/workos-fixture.js';
 
 test('hosted AuthKit login and logout traverse the Next proxy with independent browser sessions', async () => {
   const probe = createServer();
@@ -14,12 +14,11 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
   const frontendPort = (probe.address() as AddressInfo).port;
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const origin = `http://127.0.0.1:${frontendPort}`;
-  const issuer = `https://${uuid()}.example`;
-  const f = await fixture({ publicUrl: origin, ownerProvider: {
-    async authorize(c) { return `${origin}/api/v1/owner/callback?code=fake&state=${c.state}`; },
-    async exchange() { return { issuer, subject: 'browser-user' }; },
-    logoutUrl() { return `${origin}/account`; },
-  } });
+  const workos = await workosFixture(origin);
+  // Bypass the hosted UI, but exercise real SDK code exchange, sealing and refresh.
+  workos.provider.authorize = async c => workos.callback(c.state).href;
+  workos.state.lifetime = -60;
+  const f = await fixture({ publicUrl: origin, ownerProvider: workos.provider });
   const frontend = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start', '--hostname', '127.0.0.1', '--port', String(frontendPort)], {
     cwd: fileURLToPath(new URL('../frontend', import.meta.url)),
     env: { ...process.env, EXPRESS_URL: f.base, NEXT_TELEMETRY_DISABLED: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -35,6 +34,11 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
     }
     browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
     const context = await browser.newContext();
+    // Hosted logout is external UI; emulate its redirect for the fake WorkOS session.
+    await context.route('https://api.workos.com/user_management/sessions/logout?**', async route => {
+      assert.equal(new URL(route.request().url()).searchParams.get('session_id'), workos.sessionId);
+      await route.fulfill({ status: 302, headers: { location: `${origin}/account` } });
+    });
     const page = await context.newPage();
     await page.goto(`${origin}/account`);
     await page.getByRole('link', { name: 'Sign in', exact: true }).click();
@@ -55,7 +59,9 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
     await page.getByRole('link', { name: 'Sign in', exact: true }).waitFor();
     assert.equal((await context.cookies()).some(c => c.name === 'rv-owner'), false);
     const replay = await fetch(`${origin}/api/v1/owner/me`, { headers: { Cookie: `rv-owner=${session.value}` } });
-    assert.equal(replay.status, 401);
+    assert.equal(replay.status, 200); // Already-issued JWT remains valid until expiry.
+    assert.equal(workos.state.revocations, 1);
+    assert.equal(workos.state.refreshes, 1); // Refreshed cookie survived the Next proxy.
     await page.goto(`${origin}/account?error=sign_in_failed`);
     await page.locator('.account-panel').getByRole('alert').waitFor();
     assert.match(await page.locator('.account-panel').getByRole('alert').innerText(), /could not be completed/);
@@ -64,7 +70,7 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
   } finally {
     await browser?.close();
     if (frontend.exitCode === null) { const stopped = once(frontend, 'exit'); frontend.kill('SIGTERM'); await stopped; }
-    await f.db.query('DELETE FROM owners WHERE issuer=$1', [issuer]);
+    await f.db.query('DELETE FROM owners WHERE issuer=$1', [workos.issuer]);
     await f.stop();
   }
 });

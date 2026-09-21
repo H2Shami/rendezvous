@@ -1,6 +1,6 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import type { OwnerService } from './service.js';
-import { LOGIN_MS, OWNER_SESSION_MS } from './service.js';
+import { LOGIN_MS } from './service.js';
 import type { IdentityProvider, LoginScreen } from './provider.js';
 import { HttpError, requireThat } from '../validation.js';
 
@@ -10,6 +10,8 @@ export function ownerRoutes(service: OwnerService, provider: IdentityProvider | 
   const sessionName = secure ? '__Host-rv-owner' : 'rv-owner';
   const loginName = secure ? '__Host-rv-login' : 'rv-login';
   const options = { httpOnly: true, secure, sameSite: 'lax' as const, path: '/' };
+  // Cookie retention only; WorkOS controls session validity and refresh lifetime.
+  const sessionOptions = { ...options, maxAge: 14 * 24 * 60 * 60 * 1000 };
   // Reject duplicate cookies instead of guessing which one a proxy/browser meant.
   const cookie = (req: Request, name: string) => {
     const values = (req.headers.cookie || '').split(';').map(v => v.trim()).filter(v => v.startsWith(`${name}=`));
@@ -17,10 +19,14 @@ export function ownerRoutes(service: OwnerService, provider: IdentityProvider | 
   };
   const sameOrigin = (req: Request) => requireThat(req.headers.origin === origin,
     'CSRF_INVALID', 'Request must originate from this application.', 403);
-  const authenticated = async (req: Request) => {
+  const authenticated = async (req: Request, res: Response) => {
     // Never interpret bearer tokens, caller-supplied owner IDs or room cookies as login.
     const token = cookie(req, sessionName);
-    return { token, owner: await service.authenticate(token) };
+    requireThat(provider && token, 'OWNER_UNAUTHORIZED', 'Sign in to continue.', 401);
+    const identity = await provider.authenticate(token);
+    const owner = await service.authenticate(identity.issuer, identity.subject);
+    if (identity.sealedSession) res.cookie(sessionName, identity.sealedSession, sessionOptions);
+    return { identity, owner };
   };
   router.get('/config', (_req, res) => res.json({ enabled: Boolean(provider) }));
   router.get('/login', async (req, res) => {
@@ -46,8 +52,8 @@ export function ownerRoutes(service: OwnerService, provider: IdentityProvider | 
       const state = callback.searchParams.get('state')!;
       const checks = await service.consumeLogin(state, browser);
       const identity = await provider.exchange(callback, { state, ...checks });
-      const session = await service.establish(identity.issuer, identity.subject, cookie(req, sessionName), identity.sessionId);
-      res.cookie(sessionName, session.token, { ...options, maxAge: OWNER_SESSION_MS });
+      await service.establish(identity.issuer, identity.subject);
+      res.cookie(sessionName, identity.sealedSession, sessionOptions);
       res.redirect(303, `${origin}/account`);
     } catch {
       // SDK errors can contain codes, tokens and user data. Never reflect or log them.
@@ -55,17 +61,17 @@ export function ownerRoutes(service: OwnerService, provider: IdentityProvider | 
     }
   });
   router.get('/me', async (req, res) => {
-    const { token, owner } = await authenticated(req);
-    res.json({ owner: { id: owner.id }, expires_at: owner.expires_at, csrf_token: service.csrf(token) });
+    const { identity, owner } = await authenticated(req, res);
+    res.json({ owner: { id: owner.id }, expires_at: identity.expiresAt, csrf_token: service.csrf(identity.sessionId) });
   });
   router.post('/logout', async (req, res) => {
     sameOrigin(req);
-    const { token, owner } = await authenticated(req);
-    service.checkCsrf(token, req.get('X-CSRF-Token') || '');
-    await service.revoke(token);
+    const { identity } = await authenticated(req, res);
+    service.checkCsrf(identity.sessionId, req.get('X-CSRF-Token') || '');
+    const logoutUrl = await provider!.logout(identity.sessionId);
     res.clearCookie(sessionName, options);
     res.clearCookie(loginName, options);
-    res.json({ logout_url: provider?.logoutUrl(owner.provider_session_id) || `${origin}/account` });
+    res.json({ logout_url: logoutUrl });
   });
   // Foundation for future management routes: always authenticate before serving data,
   // constrain SQL by owner.id, and require same-origin + CSRF for every write.
