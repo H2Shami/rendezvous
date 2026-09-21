@@ -20,6 +20,8 @@ export function safePath(url: string) {
     /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
     ":id",
   );
+  if (/^\/api\/v1\/owner\/agents(?:\/:id(?:\/(?:disable|credentials)(?:\/:id(?:\/rotate)?)?)?)?$/.test(normalized)) return normalized;
+  if (path === '/api/v1/agents/me') return path;
   return /^(\/|\/health|\/style\.css|\/protocol\/v1|\/\.well-known\/agent-rendezvous|\/join\/:id|\/api\/v1\/sessions(?:\/:id(?:\/(?:join|messages|leave|close|invites|participants)(?:\/:id)?)?)?)$/.test(
     normalized,
   )

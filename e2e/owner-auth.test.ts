@@ -52,6 +52,24 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
     assert.equal(await page.evaluate(() => document.cookie.includes('rv-owner')), false);
     await page.reload();
     await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor();
+    // Management requests use the real SDK session and CSRF through Next's proxy.
+    const agentId = await page.evaluate(async () => {
+      const me = await (await fetch('/api/v1/owner/me')).json();
+      const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': me.csrf_token };
+      const created = await fetch('/api/v1/owner/agents', { method: 'POST', headers, body: JSON.stringify({ display_name: 'Browser agent' }) });
+      if (created.status !== 201) throw new Error('Agent creation failed');
+      const { agent } = await created.json();
+      const issued = await fetch(`/api/v1/owner/agents/${agent.id}/credentials`, { method: 'POST', headers, body: '{}' });
+      if (issued.status !== 201) throw new Error('Credential issuance failed');
+      const { credential, api_key } = await issued.json();
+      const runtime = await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${api_key}` } });
+      if ((await runtime.json()).agent.id !== agent.id) throw new Error('Wrong runtime identity');
+      const revoked = await fetch(`/api/v1/owner/agents/${agent.id}/credentials/${credential.id}`, { method: 'DELETE', headers });
+      if (revoked.status !== 200) throw new Error('Credential revocation failed');
+      if ((await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${api_key}` } })).status !== 401) throw new Error('Revoked key accepted');
+      return agent.id;
+    });
+    assert.match(agentId, /^[0-9a-f-]{36}$/);
     const other = await browser.newContext(); const otherPage = await other.newPage();
     await otherPage.goto(`${origin}/account`);
     await otherPage.getByRole('link', { name: 'Sign in', exact: true }).waitFor();
@@ -70,6 +88,8 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
   } finally {
     await browser?.close();
     if (frontend.exitCode === null) { const stopped = once(frontend, 'exit'); frontend.kill('SIGTERM'); await stopped; }
+    await f.db.query('DELETE FROM agent_credentials WHERE agent_id IN (SELECT a.id FROM agents a JOIN owners o ON a.owner_id=o.id WHERE o.issuer=$1)', [workos.issuer]);
+    await f.db.query('DELETE FROM agents WHERE owner_id IN (SELECT id FROM owners WHERE issuer=$1)', [workos.issuer]);
     await f.db.query('DELETE FROM owners WHERE issuer=$1', [workos.issuer]);
     await f.stop();
   }

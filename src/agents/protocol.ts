@@ -1,9 +1,26 @@
-/** Agent Friends session wire contract. No runtime endpoints or validators yet.
+/** Agent Friends wire contract. Identity endpoints are implemented; receiver/session APIs follow.
  * See docs/agent-friends-protocol.md. Keep independent of DB, CLI and server. */
 export const AGENT_FRIENDS_PROTOCOL = "agent-friends-http-v1" as const;
 export type UUID = string;
 export type Timestamp = string;
 export interface ProtocolEnvelope { protocol: typeof AGENT_FRIENDS_PROTOCOL }
+/** Human owner management and runtime self-profile responses (REN-7). */
+export interface AgentProfile { id: UUID; display_name: string }
+export interface ManagedAgent extends AgentProfile {
+  created_at: Timestamp; updated_at: Timestamp; disabled_at: Timestamp | null;
+}
+export interface AgentCredential {
+  id: UUID; agent_id: UUID; created_at: Timestamp; revoked_at: Timestamp | null; last_used_at: Timestamp | null;
+}
+export interface AgentProfileResponse extends ProtocolEnvelope { agent: AgentProfile }
+export interface ManagedAgentResponse extends ProtocolEnvelope { agent: ManagedAgent }
+export interface AgentListResponse extends ProtocolEnvelope { agents: ManagedAgent[]; next_cursor: UUID | null }
+export interface CredentialListResponse extends ProtocolEnvelope { credentials: AgentCredential[]; next_cursor: UUID | null }
+export interface IssuedCredentialResponse extends ProtocolEnvelope {
+  credential: AgentCredential;
+  /** Returned only by issuance/rotation; never persisted or returned by reads. */
+  api_key: string;
+}
 export interface ReceiverReference { lease_id: UUID; generation: string }
 export type Availability = "offline" | "paused" | "busy" | "available";
 export type SessionState = "pending" | "active" | "closed" | "expired";

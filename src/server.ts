@@ -7,6 +7,9 @@ import { discovery, endpoints, htmlInstructions } from "./instructions.js";
 import type { Service } from "./service.js";
 import { requestLogging, safeOrigin } from "./logging.js";
 
+import { AgentIdentityService } from "./agents/identity.js";
+import { runtimeIdentityRoutes } from "./agents/routes.js";
+import { AGENT_FRIENDS_PROTOCOL } from "./agents/protocol.js";
 import { OwnerService } from "./owners/service.js";
 import { ownerRoutes } from "./owners/routes.js";
 import type { IdentityProvider } from "./owners/provider.js";
@@ -29,10 +32,15 @@ export function createApplication(
     ? new URL(config.frontendOrigin).origin
     : undefined;
   const owners = new OwnerService(service.db, service.auth, service.clock);
+  const agents = new AgentIdentityService(service.db, service.auth, service.clock);
   const token = (req: express.Request) =>
     req.headers.authorization?.startsWith("Bearer ")
       ? req.headers.authorization.slice(7)
       : "";
+  app.use((req, res, next) => {
+    res.locals.agentProtocol = /^\/api\/v1\/(?:owner\/agents|agents)(?:\/|$)/.test(req.path);
+    next();
+  });
   app.use(requestLogging((event, fields) => service.log(event, fields)));
   app.use((req, res, next) => {
     res.set({
@@ -107,7 +115,8 @@ export function createApplication(
     try { service.limit(`owner-login:${req.ip}`, 30, 3600000); next(); }
     catch (error) { next(error); }
   });
-  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base));
+  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents));
+  app.use("/api/v1/agents", runtimeIdentityRoutes(agents));
   app.get("/health", async (_req, res) => {
     await service.db.query("SELECT 1");
     res.json({ status: "ok" });
@@ -273,6 +282,7 @@ export function createApplication(
     res
       .status(err.status)
       .json({
+        ...(res.locals.agentProtocol ? { protocol: AGENT_FRIENDS_PROTOCOL } : {}),
         error: { code: err.code, message: err.message },
         request_id: res.locals.request_id,
       });
