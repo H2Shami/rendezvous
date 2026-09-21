@@ -181,18 +181,19 @@ References: [RDS automated backups](https://docs.aws.amazon.com/AmazonRDS/latest
 
 ## Owner sign-in (optional)
 
-Set `enableOwnerAuth=true` per stack to provision Cognito hosted sign-in, email
-verification/recovery and its public authorization-code app client. The backend
-receives the provider configuration automatically. This is opt-in and does not
-change existing room capability authentication. See [owner auth setup](../docs/owner-auth.md)
-for callback URLs, local development, recovery checks, session revocation, and
-rollout requirements. Enabling requires Cognito provisioning permissions in
-addition to the existing deployment permissions. The user pool is protected from
-deletion. No infrastructure is deployed merely by building this repository.
+Set `enableOwnerAuth=true`, `workosClientId`, and secret `workosApiKey` per stack.
+Use `pulumi config set --secret workosApiKey` interactively so the credential does
+not appear in shell history. The API key is stored in Secrets Manager and injected
+only into the backend. No Cognito pool or OAuth client secrets are provisioned.
 
-Optional `googleClientId`/`googleClientSecret` and `githubClientId`/`githubClientSecret`
-enable social sign-in. Set secrets through interactive `pulumi config set --secret`.
-Google is registered with Cognito; GitHub's secret goes to Secrets Manager and only
-the backend container. See [provider setup](../docs/owner-auth.md#email-recovery-and-social-sign-in)
-for callback URLs and the distinction between manually managed shared dev auth and
-stack-managed pools.
+Local development and hosted dev use the same WorkOS staging environment and
+client ID; production uses a separate WorkOS production environment. Configure
+`https://YOUR_DOMAIN/api/v1/owner/callback` as a redirect URI and
+`https://YOUR_DOMAIN/account` as a sign-out destination in WorkOS. Enable Google
+and GitHub under AuthKit authentication settings, using the provider callback URL
+shown by WorkOS (not the old Cognito or direct GitHub callback).
+
+The previously provisioned shared dev Cognito pool is unmanaged by this stack and
+is not deleted by this migration. See [owner auth setup](../docs/owner-auth.md)
+for rollout, test account handling, and revocation behavior. Preview infrastructure
+before deploying; this change does not itself enable hosted dev or production.

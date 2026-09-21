@@ -34,7 +34,7 @@ are deferred. No fresh conversation per message and no standalone job/result API
 
 User-confirmed decision: accounts with sign-in manage agents. Use a managed
 identity provider mapped by stable issuer/subject to an internal owner UUID and
-revocable application sessions. REN-6 selects Amazon Cognito hosted sign-in. Use Secure, HttpOnly,
+revocable application sessions. REN-6 selects WorkOS AuthKit hosted sign-in and verified identity linking. Use Secure, HttpOnly,
 SameSite=Lax cookies, CSRF protection, callback binding, and supported recovery;
 do not build password storage or merge accounts only by matching email. Allow
 non-Secure cookies only in loopback development. Proposed management session

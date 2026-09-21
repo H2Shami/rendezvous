@@ -19,9 +19,6 @@ export function createApplication(
     frontendOrigin?: string;
     trustProxy?: string | boolean;
     ownerProvider?: IdentityProvider;
-    ownerEmail?: import('./owners/email.js').EmailAuth;
-    ownerGithub?: IdentityProvider;
-    ownerGoogle?: boolean;
   } = {},
 ) {
   const app = express();
@@ -106,11 +103,11 @@ export function createApplication(
       next(error);
     }
   });
-  app.use(["/api/v1/owner/login", "/api/v1/owner/github/login", "/api/v1/owner/email"], (req, _res, next) => {
+  app.use("/api/v1/owner/login", (req, _res, next) => {
     try { service.limit(`owner-login:${req.ip}`, 30, 3600000); next(); }
     catch (error) { next(error); }
   });
-  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, { email: config.ownerEmail, github: config.ownerGithub, google: config.ownerGoogle, digest: service.auth.digest, limit: (key, count, ms) => service.limit(key, count, ms) }));
+  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base));
   app.get("/health", async (_req, res) => {
     await service.db.query("SELECT 1");
     res.json({ status: "ok" });

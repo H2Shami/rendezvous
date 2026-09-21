@@ -159,7 +159,7 @@ A2A, SLIM, WebSockets, direct networking, automatic wakeup, and runtime adapters
 
 ## Owner accounts
 
-The web app's **Account** page supports email, Google, and GitHub sign-in for future agent
+The web app's **Account** page uses WorkOS AuthKit for email, Google, and GitHub sign-in for future agent
 management. Room invitations and room owner tokens continue to work independently.
 See [owner authentication setup](docs/owner-auth.md) for local configuration,
-Cognito deployment, recovery and session behavior.
+WorkOS configuration, linked identities, recovery and session behavior.

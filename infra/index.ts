@@ -5,12 +5,9 @@ import * as random from '@pulumi/random';
 
 const config = new pulumi.Config();
 const domain = config.require('domain');
-const googleClientId = config.get('googleClientId');
-const googleClientSecret = config.getSecret('googleClientSecret');
-const githubClientId = config.get('githubClientId');
-const githubClientSecret = config.getSecret('githubClientSecret');
-if (Boolean(googleClientId) !== Boolean(googleClientSecret) || Boolean(githubClientId) !== Boolean(githubClientSecret)) throw new Error('Social sign-in requires both client ID and secret for each provider.');
-if ((googleClientId || githubClientId) && !config.getBoolean('enableOwnerAuth')) throw new Error('Enable owner auth before configuring social sign-in.');
+const ownerAuthEnabled = config.getBoolean('enableOwnerAuth') ?? false;
+const workosClientId = ownerAuthEnabled ? config.require('workosClientId') : undefined;
+const workosApiKey = ownerAuthEnabled ? config.requireSecret('workosApiKey') : undefined;
 if (pulumi.getStack() !== 'prod' && domain.toLowerCase() === 'userendezvous.com') {
   throw new Error('Only the prod stack may manage userendezvous.com; use a separate subdomain for other stacks');
 }
@@ -121,10 +118,10 @@ const database = new aws.rds.Instance('database', {
 const credentials = new aws.secretsmanager.Secret('app-secrets', { recoveryWindowInDays: 30, tags }, { protect: true });
 const credentialVersion = new aws.secretsmanager.SecretVersion('app-secret-values', {
   secretId: credentials.id,
-  secretString: pulumi.all([database.address, password.result, pepper.result, githubClientSecret ?? pulumi.output('')]).apply(([host, pass, tokenPepper, githubSecret]) => JSON.stringify({
+  secretString: pulumi.all([database.address, password.result, pepper.result, workosApiKey ?? pulumi.output('')]).apply(([host, pass, tokenPepper, workosSecret]) => JSON.stringify({
     DATABASE_URL: `postgresql://rendezvous:${pass}@${host}:5432/rendezvous?sslmode=verify-full&sslrootcert=/app/rds-ca.pem`,
     TOKEN_PEPPER: tokenPepper,
-    ...(githubClientId ? { GITHUB_CLIENT_SECRET: githubSecret } : {}),
+    ...(ownerAuthEnabled ? { WORKOS_API_KEY: workosSecret } : {}),
   })),
 });
 
@@ -194,49 +191,8 @@ if (zoneId) new aws.route53.Record('site-dns', {
   zoneId, name: domain, type: 'A',
   aliases: [{ name: balancer.dnsName, zoneId: balancer.zoneId, evaluateTargetHealth: true }],
 });
-// Opt-in per stack; hosted sign-in is separate from room capabilities.
-type OwnerEnvironment = { OWNER_GOOGLE_ENABLED?: string; GITHUB_CLIENT_ID?: string; OWNER_OIDC_ISSUER?: string; OWNER_OIDC_CLIENT_ID?: string; OWNER_OIDC_LOGOUT_URL?: string };
-let ownerEnvironment = pulumi.output<OwnerEnvironment>({});
-let ownerPool: aws.cognito.UserPool | undefined;
-let ownerClient: aws.cognito.UserPoolClient | undefined;
-if (config.getBoolean('enableOwnerAuth')) {
-  ownerPool = new aws.cognito.UserPool('owners', {
-    usernameAttributes: ['email'], autoVerifiedAttributes: ['email'],
-    usernameConfiguration: { caseSensitive: false },
-    accountRecoverySetting: { recoveryMechanisms: [{ name: 'verified_email', priority: 1 }] },
-    passwordPolicy: { minimumLength: 12, requireLowercase: true, requireUppercase: true, requireNumbers: true, requireSymbols: true },
-    deletionProtection: 'ACTIVE', userPoolTier: 'LITE', tags,
-  }, { protect: true });
-  const suffix = new random.RandomString('owner-domain-suffix', { length: 10, special: false, upper: false });
-  const hostedDomain = new aws.cognito.UserPoolDomain('owner-login', {
-    domain: pulumi.interpolate`rendezvous-${pulumi.getStack()}-${suffix.result}`,
-    userPoolId: ownerPool.id, managedLoginVersion: 1,
-  });
-  const google = googleClientId ? new aws.cognito.IdentityProvider('owner-google', {
-    userPoolId: ownerPool.id, providerName: 'Google', providerType: 'Google',
-    providerDetails: { client_id: googleClientId, client_secret: googleClientSecret!, authorize_scopes: 'openid email profile' },
-    attributeMapping: { email: 'email', username: 'sub' },
-  }) : undefined;
-  ownerClient = new aws.cognito.UserPoolClient('owner-web', {
-    userPoolId: ownerPool.id, generateSecret: false,
-    allowedOauthFlowsUserPoolClient: true, allowedOauthFlows: ['code'],
-    allowedOauthScopes: ['openid', 'email'], supportedIdentityProviders: google ? ['COGNITO', google.providerName] : ['COGNITO'],
-    explicitAuthFlows: ['ALLOW_USER_PASSWORD_AUTH', 'ALLOW_USER_SRP_AUTH', 'ALLOW_REFRESH_TOKEN_AUTH'],
-    callbackUrls: [`https://${domain}/api/v1/owner/callback`],
-    logoutUrls: [`https://${domain}/account`], preventUserExistenceErrors: 'ENABLED',
-    enableTokenRevocation: true,
-  });
-  ownerEnvironment = pulumi.all([ownerPool.endpoint, ownerClient.id, hostedDomain.domain, region])
-    .apply(([endpoint, clientId, prefix, awsRegion]) => ({
-      OWNER_GOOGLE_ENABLED: String(Boolean(googleClientId)),
-      ...(githubClientId ? { GITHUB_CLIENT_ID: githubClientId } : {}),
-      OWNER_OIDC_ISSUER: `https://${endpoint}`,
-      OWNER_OIDC_CLIENT_ID: clientId,
-      OWNER_OIDC_LOGOUT_URL: `https://${prefix}.auth.${awsRegion}.amazoncognito.com/logout`,
-    }));
-}
-export const ownerPoolId = ownerPool?.id;
-export const ownerClientId = ownerClient?.id;
+// WorkOS owns human authentication; AWS only stores the backend API credential.
+const ownerEnvironment = ownerAuthEnabled ? { WORKOS_CLIENT_ID: workosClientId! } : {};
 export const ownerAuthEnvironment = ownerEnvironment;
 
 const task = new aws.ecs.TaskDefinition('task', {
@@ -255,7 +211,7 @@ const task = new aws.ecs.TaskDefinition('task', {
             PUBLIC_URL: `https://${domain}`, FRONTEND_URL: `https://${domain}`,
             TRUST_PROXY: 'loopback,10.42.0.0/16', ...ownerEnv,
           }).map(([name, value]) => ({ name, value })),
-          secrets: ['DATABASE_URL', 'TOKEN_PEPPER', ...(githubClientId ? ['GITHUB_CLIENT_SECRET'] : [])].map(name => ({ name, valueFrom: `${secretArn}:${name}::` })),
+          secrets: ['DATABASE_URL', 'TOKEN_PEPPER', ...(ownerAuthEnabled ? ['WORKOS_API_KEY'] : [])].map(name => ({ name, valueFrom: `${secretArn}:${name}::` })),
           healthCheck: { command: ['CMD-SHELL', "node -e \"fetch('http://127.0.0.1:4372/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""], interval: 10, timeout: 5, retries: 6, startPeriod: 60 },
           logConfiguration: logConfiguration('backend'),
         },

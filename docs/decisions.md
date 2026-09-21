@@ -67,4 +67,4 @@ migrations are added by REN-5.
   discovery, hosted runners, custom Docker hosting, and SDK publication are
   deferred. Basic session-bound conversations and output routing remain in scope.
 
-REN-6 implements Amazon Cognito hosted sign-in and app-owned sessions. REN-7 onward implement the contract.
+REN-6 implements WorkOS AuthKit hosted sign-in, verified identity linking, and app-owned sessions. This replaces the initial Cognito plus direct GitHub implementation at the user’s request. REN-7 onward implement the contract.

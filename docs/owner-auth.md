@@ -1,215 +1,155 @@
 # Owner account authentication (REN-6)
 
-Owners sign in through a branded account page using Cognito email/Google auth or GitHub OAuth. One account can later own many
-agents; these accounts do not replace existing room tokens or agent runtime keys.
+WorkOS AuthKit handles email/password, Google, GitHub, verification, recovery and
+identity linking. Rendezvous maps the resulting stable WorkOS user ID to a local
+owner UUID and issues a revocable app session. One owner can later own many
+agents; these accounts do not replace agent runtime keys or room capabilities.
 
-## Setup
+## Local and hosted development
 
-Use Node 22 or newer. The relay requires all three environment values to enable
-sign-in: `OWNER_OIDC_ISSUER`, `OWNER_OIDC_CLIENT_ID`, and
-`OWNER_OIDC_LOGOUT_URL`. Partial configuration fails startup. Without configuration,
-rooms remain available and `/account` explains that sign-in is not enabled.
+Use Node 22+. Create/select the Rendezvous project in WorkOS and use its **staging**
+environment for both local development and the hosted dev app. Keep production in
+a separate WorkOS production environment. In the backend's ignored `.env`, set:
 
-Create a Cognito user pool with email sign-in, automatic email verification,
-self-service registration and verified-email password recovery. Create a public
-app client (no secret) with authorization code flow, `openid email` scopes and
-Cognito as the identity provider. Register exactly:
+```dotenv
+WORKOS_API_KEY=sk_test_REPLACE_ME
+WORKOS_CLIENT_ID=client_REPLACE_ME
+PUBLIC_URL=http://localhost:3000
+FRONTEND_URL=http://localhost:3000
+```
 
-- Callback: `PUBLIC_URL/api/v1/owner/callback`
-- Sign-out: `PUBLIC_URL/account`
+Both WorkOS values must come from the same environment. Never use NEXT_PUBLIC_
+for the API key, commit it, put it in frontend configuration, or paste it into
+chat. With neither value, rooms still work but account sign-in is disabled.
+Partial/invalid configuration fails startup. Restart `npm run dev:backend` after
+changing `.env`; source watching does not reload environment variables.
 
-Use the pool's discovery issuer, the app client ID and its hosted domain `/logout`
-URL in the environment. Provider URLs must use HTTPS. `PUBLIC_URL` must be an
-HTTPS origin; loopback HTTP is allowed for local development. Register localhost
-callback/sign-out URLs on a separate development client for local testing; the
-Pulumi production client registers only its stack's HTTPS domain.
+Register both WorkOS application redirect URIs:
 
-Visit `/account` to sign in/create an account. Cognito sends verification emails;
-“Forgot password?” and “Finish email verification” on the account page handle recovery. Stable issuer/sub
-mapping preserves the internal owner ID through password recovery. The app does
-not store passwords, emails, provider access tokens, ID tokens or refresh tokens.
+- `http://localhost:3000/api/v1/owner/callback`
+- `https://dev.userendezvous.com/api/v1/owner/callback`
+
+Configure the application's sign-in endpoint for each deployment as
+`ORIGIN/api/v1/owner/login` where WorkOS requests it, and allow the matching logout
+return destinations `http://localhost:3000/account` and
+`https://dev.userendezvous.com/account`. Use exact URLs, without wildcards.
+
+Enable email/password, Google, and GitHub in WorkOS AuthKit authentication
+settings. If using your own Google/GitHub OAuth apps, copy the **WorkOS-provided
+callback URI** into each provider's settings and put those client IDs/secrets in
+WorkOS. Neither the old Cognito `/oauth2/idpresponse` URL nor Rendezvous's old
+`/github/callback` route is used. WorkOS's staging shared OAuth credentials may be
+used where offered. Configure branding in WorkOS so the hosted login, signup and
+recovery pages match Rendezvous.
+
+`/account` links to hosted AuthKit. It owns the password, email code, recovery and
+social-provider interaction; those credentials never pass through our frontend
+forms or API endpoints. The local frontend/backend and database remain local.
+Share staging secrets only with trusted developers. A shared WorkOS identity does
+not share local database contents or transfer agents between local and hosted dev.
+
+## Identity linking and migration
+
+WorkOS verifies email ownership and links supported credentials to a single User.
+Our backend accepts only a verified WorkOS user and uses its `user_*` ID as the
+subject. We do not select or merge owners by email. The internal issuer namespace
+`https://api.workos.com/client/CLIENT_ID` separates environments; it is a database
+namespace, not a JWT issuer. Keep client ID stable within an environment.
+
+Migration 008 adds a non-credential provider session ID for WorkOS logout, changes
+login attempts to the WorkOS flow, and revokes legacy Cognito/direct-GitHub app
+sessions. Existing owner rows and their IDs/data are preserved. A WorkOS sign-in
+creates a new owner rather than silently attaching to an old test account.
+Existing test users must register/sign in through WorkOS; Cognito passwords and
+sessions are not imported. Before migrating accounts that own real agents/data,
+implement an explicit verified ownership transfer or controlled migration.
+
+The previous shared dev Cognito pool `us-east-2_5EYdg33zR` was provisioned manually,
+not by Pulumi. This change leaves that cloud resource intact. Old OWNER_OIDC_*,
+OWNER_GOOGLE_ENABLED and direct GITHUB_CLIENT_* environment values are ignored.
+They can be removed after verifying the migration; retire unused cloud resources
+and credentials separately. Previously applied SQL migrations remain in the chain.
+
+## Session and authorization model
+
+The official WorkOS Node SDK builds hosted authorization requests with state and
+S256 PKCE. A ten-minute, single-use DB attempt binds that state to an independent
+HttpOnly browser cookie. State and cookie values are hashed with separate HMAC
+domains; the PKCE verifier is derived from the browser secret. Callbacks use the
+configured PUBLIC_URL, never caller-controlled Host headers. The backend consumes
+the attempt atomically and exchanges the code directly with WorkOS using the
+backend API key and verifier. No automatic retries of the code exchange.
+
+The verified user from this authenticated server-to-server response is the
+identity. The returned token is decoded only for its WorkOS session ID used at
+logout; no caller-supplied token is accepted. Access/refresh/provider tokens and
+user email are not persisted. The provider session ID cannot authenticate a user.
+
+A successful login rotates the previous browser session and issues a random opaque
+cookie with an absolute seven-day expiry. Only a domain-separated digest is stored
+in Postgres. Cookies are HttpOnly, SameSite=Lax, path `/`, without Domain, and use
+Secure plus __Host names on HTTPS. HTTP is supported only for loopback development.
+No auth tokens are kept in localStorage or sessionStorage. `/me` never returns the
+provider session ID, cookies or provider credentials.
+
+| Endpoint under `/api/v1/owner` | Behavior |
+| --- | --- |
+| GET /config | Whether WorkOS is configured; no credentials |
+| GET /login | Start bound AuthKit sign-in; optional screen=sign-up |
+| GET /callback | Consume attempt, exchange code, issue app cookie |
+| GET /me | Return internal owner ID, expiry and CSRF token |
+| POST /logout | Exact Origin + CSRF; revoke app session, clear cookies, return WorkOS logout URL |
+
+Old `/email/*` and `/github/*` endpoints are retired. The Next proxy preserves each
+Set-Cookie header. Login starts retain the existing 30/hour per-IP process-local
+limit; WorkOS handles hosted credential and email-delivery protections. Rate
+limits reset on process restart and are not shared across replicas yet.
+
+Future management routes must authenticate with OwnerService, scope every query
+by the principal's owner ID, and enforce same-origin + CSRF for writes. Submitted
+owner IDs, agent keys and room tokens never authenticate as account principals.
+Agent CRUD is REN-7; the signed-in page remains an account confirmation for now.
+
+## Logout and revocation boundaries
+
+Logout immediately revokes the app session in Postgres, clears its cookies, and
+redirects the browser to WorkOS logout with the saved session ID and configured
+return URL. If the remote redirect fails, the app session is still revoked.
+Browser logout does not revoke agent or room credentials.
+
+Set `owners.disabled_at` or revoke local owner_sessions for immediate app-side
+revocation. WorkOS logout/disable/password changes performed elsewhere do not yet
+push revocation into our independent seven-day sessions. Webhook synchronization
+or provider-managed session refresh is required before claiming that guarantee.
+No sliding session expiry. Cleanup deletes expired attempts/sessions.
 
 ## Deployment
 
-Pulumi opt-in (preview and deploy through the normal deployment process):
+Per Pulumi stack, set enableOwnerAuth=true, workosClientId and secret workosApiKey.
+Use the interactive `pulumi config set --secret workosApiKey` prompt so the secret
+is absent from command history. AWS Secrets Manager stores the key and injects it
+only into the backend task; the client ID is nonsecret backend configuration.
+WorkOS, not Pulumi/Cognito, owns identity-provider settings. No database sharing is
+introduced. Preview and deploy separately after registering the stack's URLs.
+Production must use its own WorkOS environment and HTTPS callbacks.
 
-```sh
-pulumi config set enableOwnerAuth true --stack dev
-pulumi preview --stack dev
-```
-
-The stack provisions a protected Cognito Lite pool, classic hosted UI (version 1),
-a public code-flow app client and unique hosted domain. It injects provider configuration into the backend; optional GitHub credentials use Secrets Manager. Outputs `ownerPoolId`, `ownerClientId`
-and `ownerAuthEnvironment` assist setup. No additional browser secrets or Cognito
-IAM permissions are needed by the app. Do not disable the flag on a populated
-stack without planning removal of the protected pool.
-
-Cognito's built-in email delivery has service limits. For a broader rollout,
-configure SES delivery and confirm quotas before relying on recovery mail. The
-application infrastructure has not been deployed by this PR; the shared dev
-auth pool below was provisioned separately. Real mailbox delivery is not yet
-validated. Before launch, test signup, email confirmation, password reset, login and logout against
-the deployed stack and confirm that user-pool/account recovery settings work.
-
-## Shared development auth, local app and database
-
-The default local setup shares only Cognito. Frontend/backend run on the developer's
-machine; PostgreSQL/PGlite data stays local. Copy `.env.example` to `.env` on a new
-checkout (do not overwrite an existing configuration). It includes the public dev
-pool/client identifiers; they are not credentials and need no AWS console login.
-
-```sh
-npm ci
-npm --prefix frontend ci
-# Terminal 1, Node 22+:
-npm run dev:backend
-# Terminal 2:
-npm run dev:web
-```
-
-Open **http://localhost:3000/account**, then sign in or create a development account.
-Use localhost, not 127.0.0.1, for the browser URL: Cognito callback matching is exact.
-Leave `NGROK_DOMAIN` unset. The localhost client permits only
-`http://localhost:3000/api/v1/owner/callback` and `http://localhost:3000/account`.
-Omitting `DATABASE_URL` selects local PGlite; a localhost Docker PostgreSQL URL also
-works. Do not configure shared RDS or a shared database pepper for this setup.
-
-Accounts exist in shared dev Cognito, but each local database independently maps
-issuer/subject to an internal owner ID. Development accounts must not contain real
-customer data. Using the same Cognito login on another local database does not
-transfer agent records or local history.
-
-The existing pool is `us-east-2_5EYdg33zR` in AWS account `693067573106`, region
-`us-east-2`. Its historical AWS name is `rendezvous-local-auth`; it is tagged
-`Environment=dev`, `Usage=shared-development`. The public localhost client ID is
-`nig2tofm7fv8phbf7m1ebq2lg`. This pool/client was provisioned directly for development
-and is **not managed by the application Pulumi stack**. Do not enable that stack's
-Cognito creation expecting it to adopt this pool. A deployed dev app can get a
-separate HTTPS app client on this pool when needed; production stays separate.
-
-Administrators should import the pool/client/domain into a dedicated IaC stack
-before changing their lifecycle. Keep deletion protection enabled. Removing this
-pool breaks sign-in for all developers using the shared configuration.
-
-## App-owned sessions and authorization
-
-The backend uses `openid-client` with authorization code, S256 PKCE, state, nonce,
-and ID-token signature/issuer/audience/expiry validation. A ten-minute one-use
-login attempt binds state to an independent HttpOnly browser cookie. Only hashes
-are stored; PKCE and nonce are derived with separate HMAC domains. Callback URLs
-use configured PUBLIC_URL, never untrusted Host/forwarded headers.
-
-A successful callback maps `(issuer, subject)` to `owners.id`, rotates any previous
-browser session and issues an opaque random cookie with an absolute seven-day
-expiry. The server stores only its domain-separated digest. Cookies are HttpOnly,
-SameSite=Lax, path `/`, without Domain, and use Secure plus `__Host-` names on HTTPS.
-Local HTTP cookies use unprefixed names. No auth data is kept in localStorage.
-
-Endpoints under `/api/v1/owner`:
-
-| Endpoint | Behavior |
-| --- | --- |
-| GET /config | Availability flags for email, Google, and GitHub sign-in |
-| GET /login | Start browser-bound sign-in and redirect to Cognito |
-| GET /callback | Consume the one-use attempt, validate provider response, issue cookie |
-| GET /github/login, /github/callback | Browser-bound GitHub OAuth flow |
-| POST /email/* | Same-origin email login, signup, confirmation and recovery |
-| GET /me | Authenticate cookie; return internal owner ID, expiry and CSRF token |
-| POST /logout | Require exact Origin and CSRF header, revoke app session and clear cookies; return Cognito logout URL |
-
-The frontend follows the logout URL to clear Cognito's hosted UI session. The
-app session is already revoked even if that redirect fails. Logout does not
-revoke room/agent credentials. Provider sessions can be reused for SSO; reauthentication depends on provider policy. There is no return-to parameter or arbitrary post-login redirect.
-
-Future management routes must use `OwnerService.authenticate`, constrain every
-resource query by `owner_id = principal.id` (or `requireOwnership` after loading),
-and require exact same-origin plus the `X-CSRF-Token` from `/me` for writes. Never
-use a submitted owner ID or bearer token as a user principal. No agent management
-endpoints are introduced until REN-7; owner scoping is tested at the service
-boundary now. Room owner tokens cannot read `/me`.
-
-Set `owners.disabled_at` to disable an app account immediately; all management
-sessions check it. Session revocation is immediate in Postgres. Disabling an
-account only in Cognito does not automatically revoke our already issued app
-sessions: operations must also disable/revoke the internal owner. Password reset
-also does not revoke existing app sessions automatically. Future agent
-revocation hooks are REN-7/8 work. Cleanup removes expired attempts and expired or
-revoked app sessions; no sliding expiry.
-
-Proxy response forwarding preserves individual Set-Cookie headers and callback
-redirects. Logs record safe route names and codes, never query strings, OAuth codes,
-cookies, provider errors, or token contents. Login starts have an IP budget.
+The supplied WorkOS staging key has been validated and both local/hosted-dev
+callback URLs registered. The local app reaches hosted AuthKit with email, Google
+and GitHub available (staging uses WorkOS shared social credentials). Complete a
+real staging sign-in and verify logout/branding settings before rollout. No hosted
+application deployment is included in this change. Do not delete the old Cognito pool as part of this deployment.
 
 ## Verification
 
-`test/owner-auth.test.ts` exercises durable principals, browser binding, one-use
-attempts, session rotation/expiry/revocation, owner isolation, CSRF and cookie rules.
-`test/owner-oidc.test.ts` runs the actual OIDC client against signed local tokens,
-including bad signatures, issuer/audience, expiry, nonce, state and PKCE failures.
-Browser/proxy tests verify the Next.js path with a deterministic identity provider;
-real Cognito/email smoke checks remain deployment validation.
+Tests exercise the real WorkOS SDK with a controlled HTTP transport: AuthKit URL,
+PKCE, state, code exchange, verified-user checks, safe logout, and linked methods
+mapping to one owner. Session tests cover expiry, revocation, CSRF, cross-owner
+checks, durable restart, migration and retired endpoints. Browser tests verify
+login/logout and independent cookies through Next's production proxy. Provider
+UI email delivery and actual cross-provider linking need a live staging test.
 
-References: [Cognito authorization endpoint](https://docs.aws.amazon.com/cognito/latest/developerguide/authorization-endpoint.html),
-[Cognito logout](https://docs.aws.amazon.com/cognito/latest/developerguide/logout-endpoint.html),
-[account recovery](https://docs.aws.amazon.com/cognito/latest/developerguide/managing-users-passwords.html),
-[openid-client](https://github.com/panva/openid-client).
-
-## Email recovery and social sign-in
-
-`/account` owns the email UI: sign in, sign up, finish verification, resend a
-confirmation code, forgot password, and reset password. A user who closes the tab
-before confirmation can select **Finish email verification** without creating
-another account. Attempting email sign-in on an unconfirmed account also opens
-verification. Passwords and codes stay in transient form/request memory, never
-local/session storage, URLs, the database, or logs. Codes are sent only on explicit
-signup/resend/reset requests; confirmation does not automatically log a user in.
-
-POST `/api/v1/owner/email/{login,signup,confirm,resend,forgot,reset}` requires JSON
-and the exact application Origin. Cognito public APIs perform these actions. The
-backend validates the returned ID token's signature, issuer, audience, expiry and
-token_use before issuing our normal opaque owner session. Enable
-`ALLOW_USER_PASSWORD_AUTH` on the public app client. Password reset does not yet
-revoke existing Rendezvous sessions (same limitation as provider-hosted resets).
-
-Login starts and email requests share a 30/hour per-IP budget. Email operations
-also have a 30/hour per-normalized-email budget, with 5/hour across signup/resend/
-forgot mail delivery. Keys are HMACs, not raw addresses. These limits use the
-existing in-process limiter and reset on restart; multi-replica shared quotas are
-future work. Cognito also applies provider-side quotas. Delivery responses avoid
-revealing nonexistent users; signup and unconfirmed sign-in can reveal account
-status as part of the recovery flow.
-
-Google uses Cognito federation; enable `OWNER_GOOGLE_ENABLED=true` only after
-adding Google to the pool and app client. Its Google **Web application** OAuth
-client needs this redirect URI:
-`https://rendezvous-local-693067573106.auth.us-east-2.amazoncognito.com/oauth2/idpresponse`.
-For Google apps in Testing, add intended testers in Google Auth Platform's Audience
-settings when required. Only openid/email/profile scopes are requested. Do not
-put Google's secret in frontend configuration. A maintainer with authorized AWS
-credentials can run `AWS_PROFILE=rendezvous node --env-file=.env --import tsx
-scripts/auth/configure-dev.ts` after adding GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET
-to the ignored .env. The script updates that configured pool, preserves app-client
-settings, and prints only enabled flags and callback URLs. This manually managed
-dev pool is still separate from Pulumi resources.
-
-GitHub uses a direct OAuth adapter because GitHub user login is not an OIDC
-provider. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in the backend environment.
-Register `http://localhost:3000/api/v1/owner/github/callback` for local development,
-or `https://YOUR_DOMAIN/api/v1/owner/github/callback` for deployment. The adapter
-uses code + PKCE + state and resolves a stable numeric ID through GitHub `/user`;
-it requests read:user, never repository access. Provider tokens are not persisted.
-Login state is bound to the chosen provider in migration 007, preventing callbacks
-from being used interchangeably. The config endpoint returns only availability
-flags, and the UI only offers configured providers.
-
-Email, Google, and GitHub identities are separate owner accounts. Matching email
-addresses do not merge them; explicit account linking is future work. Keep using
-the same sign-in method to reach the same owner and its future agents.
-
-Pulumi deployments accept googleClientId/googleClientSecret and
-githubClientId/githubClientSecret with enableOwnerAuth=true. Set secrets using
-`pulumi config set --secret` (interactive prompt, not a shell command containing
-the secret). Google credentials go to Cognito; GitHub's secret is stored in AWS
-Secrets Manager and injected into only the backend task. Register each stack's
-actual callback URLs with the providers before enabling it. No infrastructure
-deployment is implied by local setup.
+References: [WorkOS Node SDK](https://workos.com/docs/sdks/node),
+[identity linking](https://workos.com/docs/authkit/identity-linking),
+[environments](https://workos.com/docs/authkit/environments),
+[authorization URL](https://workos.com/docs/reference/authkit/authentication/get-authorization-url),
+[logout](https://workos.com/docs/reference/authkit/logout).

@@ -4,21 +4,21 @@ import { requireThat, secret, uuid } from '../validation.js';
 
 export const OWNER_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 export const LOGIN_MS = 10 * 60 * 1000;
-export interface OwnerPrincipal { id: string; session_id: string; expires_at: Date }
+export interface OwnerPrincipal { id: string; session_id: string; expires_at: Date; provider_session_id: string | null }
 
 export class OwnerService {
   constructor(readonly db: Database, private auth: Security, private clock = Date.now) {}
   private digest(purpose: string, value: string) { return this.auth.digest(`owner:${purpose}:${value}`); }
-  async beginLogin(flow = 'cognito') {
+  async beginLogin(flow = 'workos') {
     const state = secret(), browser = secret();
     await this.db.query('INSERT INTO owner_login_attempts(state_hash,browser_hash,expires_at,flow) VALUES($1,$2,$3,$4)',
       [this.digest('state', state), this.digest('browser', browser), new Date(this.clock() + LOGIN_MS), flow]);
     return { state, browser, ...this.checks(browser) };
   }
   checks(browser: string) {
-    return { verifier: this.digest('pkce', browser), nonce: this.digest('nonce', browser) };
+    return { verifier: this.digest('pkce', browser) };
   }
-  async consumeLogin(state: string, browser: string, flow = 'cognito') {
+  async consumeLogin(state: string, browser: string, flow = 'workos') {
     requireThat(state.length === 43 && browser.length === 43, 'LOGIN_INVALID', 'Sign-in expired or invalid. Please start again.', 400);
     // Consume once, atomically; a wrong browser cannot consume the real attempt.
     const row = await one(this.db,
@@ -27,7 +27,7 @@ export class OwnerService {
     requireThat(row, 'LOGIN_INVALID', 'Sign-in expired or invalid. Please start again.', 400);
     return this.checks(browser);
   }
-  async establish(issuer: string, subject: string, previousToken = '') {
+  async establish(issuer: string, subject: string, previousToken = '', providerSessionId?: string) {
     requireThat(issuer.length > 0 && subject.length > 0 && subject.length <= 1024, 'LOGIN_INVALID', 'Invalid sign-in identity.', 400);
     const token = secret(), sessionId = uuid(), now = new Date(this.clock());
     const expires = new Date(this.clock() + OWNER_SESSION_MS);
@@ -40,8 +40,8 @@ export class OwnerService {
       requireThat(owner && !owner.disabled_at, 'OWNER_DISABLED', 'Account is disabled.', 403);
       if (previousToken) await tx.query('UPDATE owner_sessions SET revoked_at=$1 WHERE token_hash=$2 AND revoked_at IS NULL',
         [now, this.digest('session', previousToken)]);
-      await tx.query('INSERT INTO owner_sessions(id,owner_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5)',
-        [sessionId, owner.id, this.digest('session', token), now, expires]);
+      await tx.query('INSERT INTO owner_sessions(id,owner_id,token_hash,created_at,expires_at,provider_session_id) VALUES($1,$2,$3,$4,$5,$6)',
+        [sessionId, owner.id, this.digest('session', token), now, expires, providerSessionId ?? null]);
       return owner.id;
     });
     return { token, ownerId, expires };
@@ -49,7 +49,7 @@ export class OwnerService {
   async authenticate(token: string): Promise<OwnerPrincipal> {
     requireThat(/^[A-Za-z0-9_-]{43}$/.test(token), 'OWNER_UNAUTHORIZED', 'Sign in to continue.', 401);
     const owner = await one<OwnerPrincipal>(this.db,
-      `SELECT o.id,s.id AS session_id,s.expires_at FROM owner_sessions s JOIN owners o ON o.id=s.owner_id
+      `SELECT o.id,s.id AS session_id,s.expires_at,s.provider_session_id FROM owner_sessions s JOIN owners o ON o.id=s.owner_id
        WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>$2 AND o.disabled_at IS NULL`,
       [this.digest('session', token), new Date(this.clock())]);
     requireThat(owner, 'OWNER_UNAUTHORIZED', 'Sign in to continue.', 401);

@@ -9,14 +9,14 @@ const origin = 'https://app.example';
 function fakeProvider() {
   let checks: LoginChecks;
   const provider: IdentityProvider = {
-    async authorize(c) { checks = { state: c.state, verifier: c.verifier, nonce: c.nonce }; return `https://login.example/authorize?state=${c.state}`; },
+    async authorize(c) { checks = { state: c.state, verifier: c.verifier }; return `https://login.example/authorize?state=${c.state}`; },
     async exchange(url, c) {
       assert.deepEqual(c, checks);
       assert.equal(url.origin, origin);
       if (url.searchParams.get('code') !== 'valid') throw new Error('PRIVATE_TOKEN_AND_CODE');
-      return { issuer: 'https://issuer.example', subject: 'user-1' };
+      return { issuer: 'https://issuer.example', subject: 'user-1', sessionId: 'session_fake' };
     },
-    logoutUrl: () => 'https://login.example/logout',
+    logoutUrl: (sessionId) => { assert.equal(sessionId, 'session_fake'); return 'https://login.example/logout'; },
   };
   return provider;
 }
@@ -110,12 +110,12 @@ test('browser login/callback/logout use separate secure cookies, CSRF and saniti
 
 test('owner auth is explicitly configured and rejects unsafe origins/provider URLs', async () => {
   assert.equal(ownerAuthConfig({}, 'https://app.example'), undefined);
-  assert.throws(() => ownerAuthConfig({ OWNER_OIDC_ISSUER: 'https://issuer.example' }, origin));
-  const env = { OWNER_OIDC_ISSUER: 'https://issuer.example/pool', OWNER_OIDC_CLIENT_ID: 'client', OWNER_OIDC_LOGOUT_URL: 'https://login.example/logout' };
+  assert.throws(() => ownerAuthConfig({ WORKOS_CLIENT_ID: 'client_example' }, origin));
+  const env = { WORKOS_API_KEY: 'sk_test_example', WORKOS_CLIENT_ID: 'client_example' };
   assert.ok(ownerAuthConfig(env, origin));
   assert.ok(ownerAuthConfig(env, 'http://localhost:3000'));
   assert.throws(() => ownerAuthConfig(env, 'http://public.example'));
-  assert.throws(() => ownerAuthConfig({ ...env, OWNER_OIDC_ISSUER: 'http://issuer.example' }, origin));
+  assert.throws(() => ownerAuthConfig({ ...env, WORKOS_API_KEY: 'invalid' }, origin));
   const f = await fixture();
   try { assert.equal((await fetch(`${f.base}/api/v1/owner/login`)).status, 503); }
   finally { await f.stop(); }
@@ -147,20 +147,34 @@ test('owner identity and session survive database reopen and idempotent migratio
   }
 });
 
-test('OAuth attempts cannot cross provider callbacks', async () => {
-  const f = await fixture({ publicUrl:origin, ownerProvider:fakeProvider(), ownerGithub:fakeProvider(), ownerGoogle:true });
+test('legacy provider routes are retired and stale attempts cannot authenticate through WorkOS', async () => {
+  const f = await fixture({ publicUrl:origin, ownerProvider:fakeProvider() });
+  const owners = new OwnerService(f.db,f.auth,f.now);
   const call = (path: string, cookie = '') => fetch(`${f.base}/api/v1/owner/${path}`, {redirect:'manual',headers:{Cookie:cookie}});
   try {
-    const config = await (await call('config')).json();
-    assert.equal(config.github,true); assert.equal(config.google,true);
-    const github = await call('github/login');
-    const cookie = github.headers.getSetCookie()[0].split(';')[0];
-    const state = new URL(github.headers.get('location')!).searchParams.get('state');
-    const wrong = await call(`callback?state=${state}&code=valid`,cookie);
+    assert.equal((await call('github/login')).status,404);
+    assert.equal((await call('github/callback')).status,404);
+    assert.equal((await fetch(`${f.base}/api/v1/owner/email/login`,{method:'POST'})).status,404);
+    assert.equal((await call('login?screen=unknown')).status,400);
+    const legacy = await owners.beginLogin('github');
+    const wrong = await call(`callback?state=${legacy.state}&code=valid`,`__Host-rv-login=${legacy.browser}`);
     assert.match(wrong.headers.get('location')!,/sign_in_failed/);
-    const correct = await call(`github/callback?state=${state}&code=valid`,cookie);
-    assert.equal(correct.headers.get('location'), `${origin}/account`);
-    assert.match((await call(`github/callback?state=${state}&code=valid`,cookie)).headers.get('location')!,/sign_in_failed/);
-    assert.equal((await call('login?provider=unknown')).status,400);
-  } finally { await f.db.query("DELETE FROM owners WHERE issuer='https://issuer.example' AND subject='user-1'"); await f.stop(); }
+  } finally { await f.stop(); }
+});
+
+test('WorkOS migration retires legacy sessions while preserving owners and WorkOS sessions', async () => {
+  const f = await fixture(); const owners = new OwnerService(f.db,f.auth,f.now);
+  const subject = uuid();
+  const old = await owners.establish('https://github.com',subject);
+  const current = await owners.establish('https://api.workos.com/client/client_test',subject,'','session_test');
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const sql = await readFile(new URL('../migrations/008_workos_auth.sql',import.meta.url),'utf8');
+    await f.db.exec(sql); await f.db.exec(sql);
+    await assert.rejects(owners.authenticate(old.token),{code:'OWNER_UNAUTHORIZED'});
+    assert.equal((await owners.authenticate(current.token)).provider_session_id,'session_test');
+    assert.equal((await f.db.query('SELECT id FROM owners WHERE id=$1',[old.ownerId])).rows.length,1);
+  } finally {
+    await f.db.query('DELETE FROM owners WHERE id=$1 OR id=$2',[old.ownerId,current.ownerId]); await f.stop();
+  }
 });
