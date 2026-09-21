@@ -15,7 +15,7 @@ export function safeOrigin(value?: string) {
 // Never log raw URLs, query strings, headers, bodies or arbitrary path segments.
 export function safePath(url: string) {
   const path = url.split(/[?#]/)[0];
-  if (/^\/api\/v1\/owner\/(config|login|callback|me|logout)$/.test(path)) return path;
+  if (/^\/api\/v1\/owner\/(config|login|callback|me|logout|github\/(login|callback)|email\/(login|signup|confirm|resend|forgot|reset))$/.test(path)) return path;
   const normalized = path.replace(
     /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
     ":id",

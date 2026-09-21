@@ -189,3 +189,10 @@ for callback URLs, local development, recovery checks, session revocation, and
 rollout requirements. Enabling requires Cognito provisioning permissions in
 addition to the existing deployment permissions. The user pool is protected from
 deletion. No infrastructure is deployed merely by building this repository.
+
+Optional `googleClientId`/`googleClientSecret` and `githubClientId`/`githubClientSecret`
+enable social sign-in. Set secrets through interactive `pulumi config set --secret`.
+Google is registered with Cognito; GitHub's secret goes to Secrets Manager and only
+the backend container. See [provider setup](../docs/owner-auth.md#email-recovery-and-social-sign-in)
+for callback URLs and the distinction between manually managed shared dev auth and
+stack-managed pools.

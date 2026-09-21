@@ -146,3 +146,21 @@ test('owner identity and session survive database reopen and idempotent migratio
     await db.close(); await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('OAuth attempts cannot cross provider callbacks', async () => {
+  const f = await fixture({ publicUrl:origin, ownerProvider:fakeProvider(), ownerGithub:fakeProvider(), ownerGoogle:true });
+  const call = (path: string, cookie = '') => fetch(`${f.base}/api/v1/owner/${path}`, {redirect:'manual',headers:{Cookie:cookie}});
+  try {
+    const config = await (await call('config')).json();
+    assert.equal(config.github,true); assert.equal(config.google,true);
+    const github = await call('github/login');
+    const cookie = github.headers.getSetCookie()[0].split(';')[0];
+    const state = new URL(github.headers.get('location')!).searchParams.get('state');
+    const wrong = await call(`callback?state=${state}&code=valid`,cookie);
+    assert.match(wrong.headers.get('location')!,/sign_in_failed/);
+    const correct = await call(`github/callback?state=${state}&code=valid`,cookie);
+    assert.equal(correct.headers.get('location'), `${origin}/account`);
+    assert.match((await call(`github/callback?state=${state}&code=valid`,cookie)).headers.get('location')!,/sign_in_failed/);
+    assert.equal((await call('login?provider=unknown')).status,400);
+  } finally { await f.db.query("DELETE FROM owners WHERE issuer='https://issuer.example' AND subject='user-1'"); await f.stop(); }
+});

@@ -2,7 +2,7 @@ import * as oidc from 'openid-client';
 
 export interface LoginChecks { state: string; verifier: string; nonce: string }
 export interface IdentityProvider {
-  authorize(checks: LoginChecks): Promise<string>;
+  authorize(checks: LoginChecks, provider?: string): Promise<string>;
   exchange(callback: URL, checks: LoginChecks): Promise<{ issuer: string; subject: string }>;
   logoutUrl(): string;
 }
@@ -36,13 +36,13 @@ export class OidcProvider implements IdentityProvider {
       return config;
     }).catch(error => { this.configuration = undefined; throw error; });
   }
-  async authorize(checks: LoginChecks) {
+  async authorize(checks: LoginChecks, provider?: string) {
     return oidc.buildAuthorizationUrl(await this.config(), {
       redirect_uri: `${this.settings.publicOrigin}/api/v1/owner/callback`,
       response_type: 'code', scope: 'openid email', state: checks.state,
       nonce: checks.nonce, code_challenge_method: 'S256',
       code_challenge: await oidc.calculatePKCECodeChallenge(checks.verifier),
-      prompt: 'login',
+      ...(provider === 'google' ? { identity_provider: 'Google' } : {}),
     }).href;
   }
   async exchange(callback: URL, checks: LoginChecks) {

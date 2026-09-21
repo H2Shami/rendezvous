@@ -1,6 +1,6 @@
 # Owner account authentication (REN-6)
 
-Owners sign in through Amazon Cognito hosted UI. One account can later own many
+Owners sign in through a branded account page using Cognito email/Google auth or GitHub OAuth. One account can later own many
 agents; these accounts do not replace existing room tokens or agent runtime keys.
 
 ## Setup
@@ -25,7 +25,7 @@ callback/sign-out URLs on a separate development client for local testing; the
 Pulumi production client registers only its stack's HTTPS domain.
 
 Visit `/account` to sign in/create an account. Cognito sends verification emails;
-“Forgot your password?” on its sign-in page handles recovery. Stable issuer/sub
+“Forgot password?” and “Finish email verification” on the account page handle recovery. Stable issuer/sub
 mapping preserves the internal owner ID through password recovery. The app does
 not store passwords, emails, provider access tokens, ID tokens or refresh tokens.
 
@@ -39,8 +39,7 @@ pulumi preview --stack dev
 ```
 
 The stack provisions a protected Cognito Lite pool, classic hosted UI (version 1),
-a public code-flow app client and unique hosted domain. It injects only nonsecret
-provider configuration into the backend. Outputs `ownerPoolId`, `ownerClientId`
+a public code-flow app client and unique hosted domain. It injects provider configuration into the backend; optional GitHub credentials use Secrets Manager. Outputs `ownerPoolId`, `ownerClientId`
 and `ownerAuthEnvironment` assist setup. No additional browser secrets or Cognito
 IAM permissions are needed by the app. Do not disable the flag on a populated
 stack without planning removal of the protected pool.
@@ -110,16 +109,17 @@ Endpoints under `/api/v1/owner`:
 
 | Endpoint | Behavior |
 | --- | --- |
-| GET /config | Whether sign-in is configured |
+| GET /config | Availability flags for email, Google, and GitHub sign-in |
 | GET /login | Start browser-bound sign-in and redirect to Cognito |
 | GET /callback | Consume the one-use attempt, validate provider response, issue cookie |
+| GET /github/login, /github/callback | Browser-bound GitHub OAuth flow |
+| POST /email/* | Same-origin email login, signup, confirmation and recovery |
 | GET /me | Authenticate cookie; return internal owner ID, expiry and CSRF token |
 | POST /logout | Require exact Origin and CSRF header, revoke app session and clear cookies; return Cognito logout URL |
 
 The frontend follows the logout URL to clear Cognito's hosted UI session. The
 app session is already revoked even if that redirect fails. Logout does not
-revoke room/agent credentials. Authorization requests include prompt=login; reauthentication behavior depends
-on the provider UI configuration. There is no return-to parameter or arbitrary post-login redirect.
+revoke room/agent credentials. Provider sessions can be reused for SSO; reauthentication depends on provider policy. There is no return-to parameter or arbitrary post-login redirect.
 
 Future management routes must use `OwnerService.authenticate`, constrain every
 resource query by `owner_id = principal.id` (or `requireOwnership` after loading),
@@ -153,3 +153,63 @@ References: [Cognito authorization endpoint](https://docs.aws.amazon.com/cognito
 [Cognito logout](https://docs.aws.amazon.com/cognito/latest/developerguide/logout-endpoint.html),
 [account recovery](https://docs.aws.amazon.com/cognito/latest/developerguide/managing-users-passwords.html),
 [openid-client](https://github.com/panva/openid-client).
+
+## Email recovery and social sign-in
+
+`/account` owns the email UI: sign in, sign up, finish verification, resend a
+confirmation code, forgot password, and reset password. A user who closes the tab
+before confirmation can select **Finish email verification** without creating
+another account. Attempting email sign-in on an unconfirmed account also opens
+verification. Passwords and codes stay in transient form/request memory, never
+local/session storage, URLs, the database, or logs. Codes are sent only on explicit
+signup/resend/reset requests; confirmation does not automatically log a user in.
+
+POST `/api/v1/owner/email/{login,signup,confirm,resend,forgot,reset}` requires JSON
+and the exact application Origin. Cognito public APIs perform these actions. The
+backend validates the returned ID token's signature, issuer, audience, expiry and
+token_use before issuing our normal opaque owner session. Enable
+`ALLOW_USER_PASSWORD_AUTH` on the public app client. Password reset does not yet
+revoke existing Rendezvous sessions (same limitation as provider-hosted resets).
+
+Login starts and email requests share a 30/hour per-IP budget. Email operations
+also have a 30/hour per-normalized-email budget, with 5/hour across signup/resend/
+forgot mail delivery. Keys are HMACs, not raw addresses. These limits use the
+existing in-process limiter and reset on restart; multi-replica shared quotas are
+future work. Cognito also applies provider-side quotas. Delivery responses avoid
+revealing nonexistent users; signup and unconfirmed sign-in can reveal account
+status as part of the recovery flow.
+
+Google uses Cognito federation; enable `OWNER_GOOGLE_ENABLED=true` only after
+adding Google to the pool and app client. Its Google **Web application** OAuth
+client needs this redirect URI:
+`https://rendezvous-local-693067573106.auth.us-east-2.amazoncognito.com/oauth2/idpresponse`.
+For Google apps in Testing, add intended testers in Google Auth Platform's Audience
+settings when required. Only openid/email/profile scopes are requested. Do not
+put Google's secret in frontend configuration. A maintainer with authorized AWS
+credentials can run `AWS_PROFILE=rendezvous node --env-file=.env --import tsx
+scripts/auth/configure-dev.ts` after adding GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET
+to the ignored .env. The script updates that configured pool, preserves app-client
+settings, and prints only enabled flags and callback URLs. This manually managed
+dev pool is still separate from Pulumi resources.
+
+GitHub uses a direct OAuth adapter because GitHub user login is not an OIDC
+provider. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in the backend environment.
+Register `http://localhost:3000/api/v1/owner/github/callback` for local development,
+or `https://YOUR_DOMAIN/api/v1/owner/github/callback` for deployment. The adapter
+uses code + PKCE + state and resolves a stable numeric ID through GitHub `/user`;
+it requests read:user, never repository access. Provider tokens are not persisted.
+Login state is bound to the chosen provider in migration 007, preventing callbacks
+from being used interchangeably. The config endpoint returns only availability
+flags, and the UI only offers configured providers.
+
+Email, Google, and GitHub identities are separate owner accounts. Matching email
+addresses do not merge them; explicit account linking is future work. Keep using
+the same sign-in method to reach the same owner and its future agents.
+
+Pulumi deployments accept googleClientId/googleClientSecret and
+githubClientId/githubClientSecret with enableOwnerAuth=true. Set secrets using
+`pulumi config set --secret` (interactive prompt, not a shell command containing
+the secret). Google credentials go to Cognito; GitHub's secret is stored in AWS
+Secrets Manager and injected into only the backend task. Register each stack's
+actual callback URLs with the providers before enabling it. No infrastructure
+deployment is implied by local setup.

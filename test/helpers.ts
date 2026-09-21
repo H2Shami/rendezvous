@@ -5,13 +5,13 @@ import { createApplication } from '../src/server.js';
 import type { IdentityProvider } from '../src/owners/provider.js';
 import { secret, uuid } from '../src/validation.js';
 
-export async function fixture(options: ServiceConfig & { dataDir?: string; port?: number; publicUrl?: string; pepper?: string; ownerProvider?: IdentityProvider } = {}) {
+export async function fixture(options: ServiceConfig & { dataDir?: string; port?: number; publicUrl?: string; pepper?: string; ownerProvider?: IdentityProvider; ownerEmail?: import('../src/owners/email.js').EmailAuth; ownerGithub?: IdentityProvider; ownerGoogle?: boolean } = {}) {
   let offset = 0;
   const clock = options.clock || (() => Date.now() + offset);
   const db = await openDatabase({ databaseUrl: process.env.TEST_DATABASE_URL, dataDir: options.dataDir ?? 'memory://' });
   const auth = security({ pepper: options.pepper || secret() });
   const service = new Service(db, auth, { clock, logger: () => {}, sessionsPerHour: 10000, joinsPerHour: 10000, messagesPerMinute: 10000, ...options });
-  const app = createApplication(service, { publicUrl: options.publicUrl, ownerProvider: options.ownerProvider });
+  const app = createApplication(service, { publicUrl: options.publicUrl, ownerProvider: options.ownerProvider, ownerEmail: options.ownerEmail, ownerGithub: options.ownerGithub, ownerGoogle: options.ownerGoogle });
   const address = await app.listen(options.port ?? 0);
   const base = `http://127.0.0.1:${address.port}`;
   const ids: string[] = [];

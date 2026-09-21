@@ -5,6 +5,8 @@ import { loadSecrets, security } from "./security.js";
 import { Service } from "./service.js";
 import { createApplication } from "./server.js";
 import { OidcProvider, ownerAuthConfig } from "./owners/provider.js";
+import { CognitoEmailAuth } from './owners/email.js';
+import { GitHubProvider } from './owners/github.js';
 import lockfile from "proper-lockfile";
 
 async function main() {
@@ -70,8 +72,12 @@ async function main() {
       messageBudget: numeric("MESSAGE_BUDGET", 10000),
     });
     const ownerConfig = ownerAuthConfig(process.env, publicUrl);
+    if (Boolean(process.env.GITHUB_CLIENT_ID) !== Boolean(process.env.GITHUB_CLIENT_SECRET)) throw new Error('Set both GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.');
     app = createApplication(service, {
       ownerProvider: ownerConfig ? new OidcProvider(ownerConfig) : undefined,
+      ownerEmail: ownerConfig ? new CognitoEmailAuth(ownerConfig.issuer, ownerConfig.clientId) : undefined,
+      ownerGithub: process.env.GITHUB_CLIENT_ID ? new GitHubProvider(process.env.GITHUB_CLIENT_ID, process.env.GITHUB_CLIENT_SECRET!, publicUrl) : undefined,
+      ownerGoogle: process.env.OWNER_GOOGLE_ENABLED === 'true',
       publicUrl,
       frontendOrigin: process.env.FRONTEND_URL || process.env.NGROK_DOMAIN,
       trustProxy: process.env.TRUST_PROXY || false,

@@ -6,16 +6,22 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { fixture } from '../test/helpers.js';
-import { uuid } from '../src/validation.js';
+import { HttpError, uuid } from '../src/validation.js';
 
-test('account login and logout traverse the Next proxy with independent browser sessions', async () => {
+test('account OAuth, email verification recovery and password reset traverse the Next proxy', async () => {
   const probe = createServer();
   await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
   const frontendPort = (probe.address() as AddressInfo).port;
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const origin = `http://127.0.0.1:${frontendPort}`;
   const issuer = `https://${uuid()}.example`;
-  const f = await fixture({ publicUrl: origin, ownerProvider: {
+  let verified = false;
+  let resendCount = 0;
+  const f = await fixture({ publicUrl: origin, ownerGoogle: true, ownerEmail: {
+    async login() { if (!verified) throw new HttpError('CONFIRMATION_REQUIRED', 'Verify email.', 409); return { issuer, subject: 'email-user' }; },
+    async signup() {}, async confirm(_email, code) { if (code !== '123456') throw new HttpError('INVALID_CODE', 'That code is incorrect.'); verified = true; },
+    async resend() { resendCount++; }, async forgot() {}, async reset() {},
+  }, ownerProvider: {
     async authorize(c) { return `${origin}/api/v1/owner/callback?code=fake&state=${c.state}`; },
     async exchange() { return { issuer, subject: 'browser-user' }; },
     logoutUrl() { return `${origin}/account`; },
@@ -37,7 +43,7 @@ test('account login and logout traverse the Next proxy with independent browser 
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(`${origin}/account`);
-    await page.getByRole('link', { name: 'Sign in / Create account' }).click();
+    await page.getByRole('link', { name: 'Continue with Google' }).click();
     await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor();
     assert.equal(page.url(), `${origin}/account`);
     const cookies = await context.cookies();
@@ -50,15 +56,47 @@ test('account login and logout traverse the Next proxy with independent browser 
     await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor();
     const other = await browser.newContext(); const otherPage = await other.newPage();
     await otherPage.goto(`${origin}/account`);
-    await otherPage.getByRole('link', { name: 'Sign in / Create account' }).waitFor();
+    await otherPage.getByRole('link', { name: 'Continue with Google' }).waitFor();
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
-    await page.getByRole('link', { name: 'Sign in / Create account' }).waitFor();
+    await page.getByRole('link', { name: 'Continue with Google' }).waitFor();
     assert.equal((await context.cookies()).some(c => c.name === 'rv-owner'), false);
     const replay = await fetch(`${origin}/api/v1/owner/me`, { headers: { Cookie: `rv-owner=${session.value}` } });
     assert.equal(replay.status, 401);
     await page.goto(`${origin}/account?error=sign_in_failed`);
     await page.locator('.account-panel').getByRole('alert').waitFor();
     assert.match(await page.locator('.account-panel').getByRole('alert').innerText(), /could not be completed/);
+    await page.getByLabel('Email', {exact:true}).fill('owner@example.com');
+    await page.getByLabel('Password', {exact:true}).fill('TestPassword123!');
+    await page.getByRole('button',{name:'Sign in',exact:true}).click();
+    await page.getByRole('heading',{name:'Check your inbox.'}).waitFor();
+    await page.reload(); // Simulate closing the page before entering the code.
+    await page.getByRole('button',{name:'Finish email verification'}).click();
+    await page.getByLabel('Email',{exact:true}).fill('owner@example.com');
+    await page.getByRole('button',{name:'Send a new code'}).click();
+    await page.getByText('If this account is awaiting verification, a new code is on its way.').waitFor();
+    assert.equal(resendCount,1);
+    await page.getByLabel('Verification code').fill('000000');
+    await page.getByRole('button',{name:'Verify email'}).click();
+    await page.locator('.account-panel').getByRole('alert').waitFor();
+    assert.match(await page.locator('.account-panel').getByRole('alert').innerText(), /incorrect/);
+    await page.getByLabel('Verification code').fill('123456');
+    await page.getByRole('button',{name:'Verify email'}).click();
+    await page.getByText('Email verified. You can now sign in.').waitFor();
+    await page.getByLabel('Password',{exact:true}).fill('TestPassword123!');
+    await page.getByRole('button',{name:'Sign in',exact:true}).click();
+    await page.getByRole('button',{name:'Sign out',exact:true}).waitFor();
+    assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length),0);
+    await page.getByRole('button',{name:'Sign out',exact:true}).click();
+    await page.getByRole('button',{name:'Forgot password?'}).click();
+    await page.getByLabel('Email',{exact:true}).fill('owner@example.com');
+    await page.getByRole('button',{name:'Send reset code'}).click();
+    await page.getByLabel('Verification code').fill('123456');
+    await page.getByLabel('New password').fill('NewPassword123!');
+    await page.getByRole('button',{name:'Reset password',exact:true}).click();
+    await page.getByText('Password reset. Sign in with your new password.').waitFor();
+    await page.setViewportSize({width:390,height:844});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true);
+
   } finally {
     await browser?.close();
     if (frontend.exitCode === null) { const stopped = once(frontend, 'exit'); frontend.kill('SIGTERM'); await stopped; }
