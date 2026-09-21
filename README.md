@@ -156,3 +156,10 @@ Messages persist until session retention cleanup; they do not wake an agent whos
 Names are self-reported. Server, owner, and admitted participants can read history. Invite/participant/owner secrets are HMAC-hashed at rest; message content is not signed or end-to-end encrypted. Logs record instruction opens, joins, send sequences, poll cursors/counts/durations, disconnects, and leave/close events without text or credentials.
 
 A2A, SLIM, WebSockets, direct networking, automatic wakeup, and runtime adapters are outside this implementation.
+
+## Owner accounts
+
+The web app's **Account** page uses WorkOS AuthKit for email, Google, and GitHub sign-in for future agent
+management. Room invitations and room owner tokens continue to work independently.
+See [owner authentication setup](docs/owner-auth.md) for local configuration,
+WorkOS configuration, linked identities, recovery and session behavior.

@@ -5,6 +5,9 @@ import * as random from '@pulumi/random';
 
 const config = new pulumi.Config();
 const domain = config.require('domain');
+const ownerAuthEnabled = config.getBoolean('enableOwnerAuth') ?? false;
+const workosClientId = ownerAuthEnabled ? config.require('workosClientId') : undefined;
+const workosApiKey = ownerAuthEnabled ? config.requireSecret('workosApiKey') : undefined;
 if (pulumi.getStack() !== 'prod' && domain.toLowerCase() === 'userendezvous.com') {
   throw new Error('Only the prod stack may manage userendezvous.com; use a separate subdomain for other stacks');
 }
@@ -115,9 +118,10 @@ const database = new aws.rds.Instance('database', {
 const credentials = new aws.secretsmanager.Secret('app-secrets', { recoveryWindowInDays: 30, tags }, { protect: true });
 const credentialVersion = new aws.secretsmanager.SecretVersion('app-secret-values', {
   secretId: credentials.id,
-  secretString: pulumi.all([database.address, password.result, pepper.result]).apply(([host, pass, tokenPepper]) => JSON.stringify({
+  secretString: pulumi.all([database.address, password.result, pepper.result, workosApiKey ?? pulumi.output('')]).apply(([host, pass, tokenPepper, workosSecret]) => JSON.stringify({
     DATABASE_URL: `postgresql://rendezvous:${pass}@${host}:5432/rendezvous?sslmode=verify-full&sslrootcert=/app/rds-ca.pem`,
     TOKEN_PEPPER: tokenPepper,
+    ...(ownerAuthEnabled ? { WORKOS_API_KEY: workosSecret } : {}),
   })),
 });
 
@@ -187,13 +191,17 @@ if (zoneId) new aws.route53.Record('site-dns', {
   zoneId, name: domain, type: 'A',
   aliases: [{ name: balancer.dnsName, zoneId: balancer.zoneId, evaluateTargetHealth: true }],
 });
+// WorkOS owns human authentication; AWS only stores the backend API credential.
+const ownerEnvironment = ownerAuthEnabled ? { WORKOS_CLIENT_ID: workosClientId! } : {};
+export const ownerAuthEnvironment = ownerEnvironment;
+
 const task = new aws.ecs.TaskDefinition('task', {
   family: `${pulumi.getProject()}-${pulumi.getStack()}`,
   requiresCompatibilities: ['FARGATE'], networkMode: 'awsvpc', cpu: '512', memory: '1024',
   executionRoleArn: executionRole.arn, taskRoleArn: taskRole.arn,
   runtimePlatform: { cpuArchitecture: 'X86_64', operatingSystemFamily: 'LINUX' },
-  containerDefinitions: pulumi.all([backendImage.repoDigest, frontendImage.repoDigest, credentials.arn, logs.name, region])
-    .apply(([backend, frontend, secretArn, logGroup, awsRegion]) => {
+  containerDefinitions: pulumi.all([backendImage.repoDigest, frontendImage.repoDigest, credentials.arn, logs.name, region, ownerEnvironment])
+    .apply(([backend, frontend, secretArn, logGroup, awsRegion, ownerEnv]) => {
       const logConfiguration = (name: string) => ({ logDriver: 'awslogs', options: {
         'awslogs-group': logGroup, 'awslogs-region': awsRegion, 'awslogs-stream-prefix': name,
       } });
@@ -201,9 +209,9 @@ const task = new aws.ecs.TaskDefinition('task', {
         { name: 'backend', image: backend, essential: true, stopTimeout: 90,
           environment: Object.entries({ HOST: '127.0.0.1', PORT: '4372',
             PUBLIC_URL: `https://${domain}`, FRONTEND_URL: `https://${domain}`,
-            TRUST_PROXY: 'loopback,10.42.0.0/16',
+            TRUST_PROXY: 'loopback,10.42.0.0/16', ...ownerEnv,
           }).map(([name, value]) => ({ name, value })),
-          secrets: ['DATABASE_URL', 'TOKEN_PEPPER'].map(name => ({ name, valueFrom: `${secretArn}:${name}::` })),
+          secrets: ['DATABASE_URL', 'TOKEN_PEPPER', ...(ownerAuthEnabled ? ['WORKOS_API_KEY'] : [])].map(name => ({ name, valueFrom: `${secretArn}:${name}::` })),
           healthCheck: { command: ['CMD-SHELL', "node -e \"fetch('http://127.0.0.1:4372/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""], interval: 10, timeout: 5, retries: 6, startPeriod: 60 },
           logConfiguration: logConfiguration('backend'),
         },

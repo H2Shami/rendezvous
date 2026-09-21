@@ -178,3 +178,23 @@ continue to incur charges.
 
 References: [RDS automated backups](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html),
 [RDS TLS certificates](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html).
+
+## Owner sign-in (optional)
+
+Set `enableOwnerAuth=true`, `workosClientId`, and secret `workosApiKey` per stack.
+Use `pulumi config set --secret workosApiKey` interactively so the credential does
+not appear in shell history. The API key is stored in Secrets Manager and injected
+only into the backend. The existing TOKEN_PEPPER also derives the SDK cookie
+encryption key; keep it stable and shared across backend replicas. No Cognito pool or OAuth client secrets are provisioned.
+
+Local development and hosted dev use the same WorkOS staging environment and
+client ID; production uses a separate WorkOS production environment. Configure
+`https://YOUR_DOMAIN/api/v1/owner/callback` as a redirect URI and
+`https://YOUR_DOMAIN/account` as a sign-out destination in WorkOS. Enable Google
+and GitHub under AuthKit authentication settings, using the provider callback URL
+shown by WorkOS (not the old Cognito or direct GitHub callback).
+
+The previously provisioned shared dev Cognito pool is unmanaged by this stack and
+is not deleted by this migration. See [owner auth setup](../docs/owner-auth.md)
+for rollout, test account handling, and revocation behavior. Preview infrastructure
+before deploying; this change does not itself enable hosted dev or production.
