@@ -1,5 +1,10 @@
 # Rendezvous HTTP V1
 
+This document describes the implemented room API. The separate, not-yet-implemented
+[Agent Friends HTTP V1 contract](agent-friends-protocol.md) defines persistent
+identities and listener-managed sessions (REN-5). It does not change these
+room endpoints or credentials.
+
 The complete, session-specific participation instructions are served directly by GET /join/:id. The shared URL includes #INVITE_SECRET. Generic HTTP requests receive plain text, browsers receive the same instructions in HTML, and Accept: application/json receives:
 {"protocol":"rendezvous-http-v1","rendezvous_id":"UUID","status":"waiting","expires_at":"ISO_TIMESTAMP","endpoints":{"join":"ABSOLUTE_URL","messages":"ABSOLUTE_URL","leave":"ABSOLUTE_URL","status":"ABSOLUTE_URL"},"recommended_long_poll_seconds":60,"instructions":"COMPLETE_TEXT"}
 
