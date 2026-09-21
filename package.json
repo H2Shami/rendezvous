@@ -21,7 +21,7 @@
     "typecheck": "tsc -p tsconfig.tests.json",
     "demo": "tsx scripts/demo.ts",
     "test:postgres": "npm run build && node scripts/test-postgres.js",
-    "test:ui": "npm run build && npm run build:web && tsx --test e2e/ui.test.ts",
+    "test:ui": "npm run build && npm run build:web && tsx --test --test-concurrency=1 e2e/*.test.ts",
     "demo:tmux": "npm run build && node scripts/tmux-demo.js",
     "build:cli": "node scripts/build-cli.js",
     "pack:cli": "npm run build:cli && npm pack ./packages/cli",
@@ -34,6 +34,7 @@
     "@electric-sql/pglite": "^0.5.8",
     "express": "^5.2.1",
     "jsonc-parser": "^3.3.1",
+    "openid-client": "^6.8.8",
     "pg": "^8.23.0",
     "proper-lockfile": "^4.1.2"
   },

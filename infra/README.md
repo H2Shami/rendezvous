@@ -178,3 +178,14 @@ continue to incur charges.
 
 References: [RDS automated backups](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html),
 [RDS TLS certificates](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html).
+
+## Owner sign-in (optional)
+
+Set `enableOwnerAuth=true` per stack to provision Cognito hosted sign-in, email
+verification/recovery and its public authorization-code app client. The backend
+receives the provider configuration automatically. This is opt-in and does not
+change existing room capability authentication. See [owner auth setup](../docs/owner-auth.md)
+for callback URLs, local development, recovery checks, session revocation, and
+rollout requirements. Enabling requires Cognito provisioning permissions in
+addition to the existing deployment permissions. The user pool is protected from
+deletion. No infrastructure is deployed merely by building this repository.

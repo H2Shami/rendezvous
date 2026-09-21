@@ -187,13 +187,50 @@ if (zoneId) new aws.route53.Record('site-dns', {
   zoneId, name: domain, type: 'A',
   aliases: [{ name: balancer.dnsName, zoneId: balancer.zoneId, evaluateTargetHealth: true }],
 });
+// Opt-in per stack; hosted sign-in is separate from room capabilities.
+type OwnerEnvironment = { OWNER_OIDC_ISSUER?: string; OWNER_OIDC_CLIENT_ID?: string; OWNER_OIDC_LOGOUT_URL?: string };
+let ownerEnvironment = pulumi.output<OwnerEnvironment>({});
+let ownerPool: aws.cognito.UserPool | undefined;
+let ownerClient: aws.cognito.UserPoolClient | undefined;
+if (config.getBoolean('enableOwnerAuth')) {
+  ownerPool = new aws.cognito.UserPool('owners', {
+    usernameAttributes: ['email'], autoVerifiedAttributes: ['email'],
+    usernameConfiguration: { caseSensitive: false },
+    accountRecoverySetting: { recoveryMechanisms: [{ name: 'verified_email', priority: 1 }] },
+    passwordPolicy: { minimumLength: 12, requireLowercase: true, requireUppercase: true, requireNumbers: true, requireSymbols: true },
+    deletionProtection: 'ACTIVE', userPoolTier: 'LITE', tags,
+  }, { protect: true });
+  const suffix = new random.RandomString('owner-domain-suffix', { length: 10, special: false, upper: false });
+  const hostedDomain = new aws.cognito.UserPoolDomain('owner-login', {
+    domain: pulumi.interpolate`rendezvous-${pulumi.getStack()}-${suffix.result}`,
+    userPoolId: ownerPool.id, managedLoginVersion: 1,
+  });
+  ownerClient = new aws.cognito.UserPoolClient('owner-web', {
+    userPoolId: ownerPool.id, generateSecret: false,
+    allowedOauthFlowsUserPoolClient: true, allowedOauthFlows: ['code'],
+    allowedOauthScopes: ['openid', 'email'], supportedIdentityProviders: ['COGNITO'],
+    callbackUrls: [`https://${domain}/api/v1/owner/callback`],
+    logoutUrls: [`https://${domain}/account`], preventUserExistenceErrors: 'ENABLED',
+    enableTokenRevocation: true,
+  });
+  ownerEnvironment = pulumi.all([ownerPool.endpoint, ownerClient.id, hostedDomain.domain, region])
+    .apply(([endpoint, clientId, prefix, awsRegion]) => ({
+      OWNER_OIDC_ISSUER: `https://${endpoint}`,
+      OWNER_OIDC_CLIENT_ID: clientId,
+      OWNER_OIDC_LOGOUT_URL: `https://${prefix}.auth.${awsRegion}.amazoncognito.com/logout`,
+    }));
+}
+export const ownerPoolId = ownerPool?.id;
+export const ownerClientId = ownerClient?.id;
+export const ownerAuthEnvironment = ownerEnvironment;
+
 const task = new aws.ecs.TaskDefinition('task', {
   family: `${pulumi.getProject()}-${pulumi.getStack()}`,
   requiresCompatibilities: ['FARGATE'], networkMode: 'awsvpc', cpu: '512', memory: '1024',
   executionRoleArn: executionRole.arn, taskRoleArn: taskRole.arn,
   runtimePlatform: { cpuArchitecture: 'X86_64', operatingSystemFamily: 'LINUX' },
-  containerDefinitions: pulumi.all([backendImage.repoDigest, frontendImage.repoDigest, credentials.arn, logs.name, region])
-    .apply(([backend, frontend, secretArn, logGroup, awsRegion]) => {
+  containerDefinitions: pulumi.all([backendImage.repoDigest, frontendImage.repoDigest, credentials.arn, logs.name, region, ownerEnvironment])
+    .apply(([backend, frontend, secretArn, logGroup, awsRegion, ownerEnv]) => {
       const logConfiguration = (name: string) => ({ logDriver: 'awslogs', options: {
         'awslogs-group': logGroup, 'awslogs-region': awsRegion, 'awslogs-stream-prefix': name,
       } });
@@ -201,7 +238,7 @@ const task = new aws.ecs.TaskDefinition('task', {
         { name: 'backend', image: backend, essential: true, stopTimeout: 90,
           environment: Object.entries({ HOST: '127.0.0.1', PORT: '4372',
             PUBLIC_URL: `https://${domain}`, FRONTEND_URL: `https://${domain}`,
-            TRUST_PROXY: 'loopback,10.42.0.0/16',
+            TRUST_PROXY: 'loopback,10.42.0.0/16', ...ownerEnv,
           }).map(([name, value]) => ({ name, value })),
           secrets: ['DATABASE_URL', 'TOKEN_PEPPER'].map(name => ({ name, valueFrom: `${secretArn}:${name}::` })),
           healthCheck: { command: ['CMD-SHELL', "node -e \"fetch('http://127.0.0.1:4372/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""], interval: 10, timeout: 5, retries: 6, startPeriod: 60 },

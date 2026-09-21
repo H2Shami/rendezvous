@@ -7,6 +7,10 @@ import { discovery, endpoints, htmlInstructions } from "./instructions.js";
 import type { Service } from "./service.js";
 import { requestLogging, safeOrigin } from "./logging.js";
 
+import { OwnerService } from "./owners/service.js";
+import { ownerRoutes } from "./owners/routes.js";
+import type { IdentityProvider } from "./owners/provider.js";
+
 const root = new URL("../", import.meta.url);
 export function createApplication(
   service: Service,
@@ -14,6 +18,7 @@ export function createApplication(
     publicUrl?: string;
     frontendOrigin?: string;
     trustProxy?: string | boolean;
+    ownerProvider?: IdentityProvider;
   } = {},
 ) {
   const app = express();
@@ -23,6 +28,7 @@ export function createApplication(
   const frontendOrigin = config.frontendOrigin
     ? new URL(config.frontendOrigin).origin
     : undefined;
+  const owners = new OwnerService(service.db, service.auth, service.clock);
   const token = (req: express.Request) =>
     req.headers.authorization?.startsWith("Bearer ")
       ? req.headers.authorization.slice(7)
@@ -97,6 +103,11 @@ export function createApplication(
       next(error);
     }
   });
+  app.use("/api/v1/owner/login", (req, _res, next) => {
+    try { service.limit(`owner-login:${req.ip}`, 30, 3600000); next(); }
+    catch (error) { next(error); }
+  });
+  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base));
   app.get("/health", async (_req, res) => {
     await service.db.query("SELECT 1");
     res.json({ status: "ok" });
@@ -272,7 +283,7 @@ export function createApplication(
     app,
   );
   const cleanup = setInterval(
-    () => void service.cleanup().catch(() => service.log("cleanup.failed")),
+    () => void Promise.all([service.cleanup(), owners.cleanup()]).catch(() => service.log("cleanup.failed")),
     60000,
   );
   cleanup.unref();

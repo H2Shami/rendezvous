@@ -4,6 +4,7 @@ import { openDatabase, type Database } from "./db.js";
 import { loadSecrets, security } from "./security.js";
 import { Service } from "./service.js";
 import { createApplication } from "./server.js";
+import { OidcProvider, ownerAuthConfig } from "./owners/provider.js";
 import lockfile from "proper-lockfile";
 
 async function main() {
@@ -68,7 +69,9 @@ async function main() {
       messagesPerMinute: numeric("MESSAGES_PER_MINUTE", 60),
       messageBudget: numeric("MESSAGE_BUDGET", 10000),
     });
+    const ownerConfig = ownerAuthConfig(process.env, publicUrl);
     app = createApplication(service, {
+      ownerProvider: ownerConfig ? new OidcProvider(ownerConfig) : undefined,
       publicUrl,
       frontendOrigin: process.env.FRONTEND_URL || process.env.NGROK_DOMAIN,
       trustProxy: process.env.TRUST_PROXY || false,

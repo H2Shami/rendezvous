@@ -15,6 +15,10 @@ async function forward(request: NextRequest, context: { params: Promise<{ path: 
   const responseHeaders = new Headers(response.headers);
   responseHeaders.delete('content-encoding');
   responseHeaders.delete('content-length');
+  // Preserve each Set-Cookie separately: login callback clears a transient cookie
+  // and sets the account cookie, and commas inside Expires cannot be split safely.
+  responseHeaders.delete('set-cookie');
+  for (const cookie of response.headers.getSetCookie()) responseHeaders.append('set-cookie', cookie);
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders });
 }
 

@@ -67,4 +67,4 @@ migrations are added by REN-5.
   discovery, hosted runners, custom Docker hosting, and SDK publication are
   deferred. Basic session-bound conversations and output routing remain in scope.
 
-REN-6 selects the managed sign-in provider. REN-7 onward implement the contract.
+REN-6 implements Amazon Cognito hosted sign-in and app-owned sessions. REN-7 onward implement the contract.
