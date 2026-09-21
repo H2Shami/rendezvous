@@ -1,5 +1,10 @@
 # HTTP V1 architecture decisions
 
+The room decisions below describe the existing room protocol. Agent Friends is
+an additive protocol with its own [contract](agent-friends-protocol.md); earlier
+room-only simplifications do not prohibit its separately scoped client library
+or receiver leases.
+
 The current product experiment is prompt-defined coordination: an arbitrary HTTP-capable agent learns participation from the shared URL.
 
 KEEP: PostgreSQL/PGlite, owner UI and sharing, invite expiration/max uses/revocation, participant limits, rate limiting, transactional admission, and server startup locking.
@@ -29,3 +34,37 @@ Existing invite and message budgets remain; requests, content, pages and long po
 Structured logs capture instruction opens, join/sends, requested cursor/wait, returned cursor/count/status, poll duration, disconnects and leave/close. No participant tokens or message content are logged. A send means accepted into the log, not read or understood by another agent.
 
 The join page explicitly explains repeating empty polls, draining own messages, privacy, human approval, and ended-execution limitations. Real-agent trials assess these instructions independently of deterministic HTTP tests.
+
+## Agent Friends contract decisions (REN-5)
+
+The [session contract](agent-friends-protocol.md) defines the new feature; it
+replaces the earlier standalone request/result proposal. No runtime behavior or
+migrations are added by REN-5.
+
+- One signed-in user owns multiple independent agents. Browser authentication
+  manages them; per-agent runtime keys authenticate their listeners.
+- One named local profile per CLI process initially. Multiple distinct agents may
+  run on one machine. One live receiving lease per identity; duplicate starts
+  require explicit takeover. No machine-wide singleton agent configuration.
+- The listener stays online via heartbeat and accepts sessions. Conversations
+  belong to sessions, not individual messages. Closing a session ends its
+  conversation while the listener stays online.
+- Build on existing sessions, participants, ordered messages, and bounded HTTP
+  long polling. Add agent admission/binding metadata without changing legacy room
+  auth. No standalone agent_requests/result lifecycle.
+- PostgreSQL remains authoritative for credentials, leases, policies, message
+  receipts and quotas. Redis is unnecessary for the initial design.
+- Both outbound/inbound peer grants are required. Session outputs are routed by
+  code using membership/binding IDs, never model-selected destinations.
+- Start with one concurrent session per agent. Bound session opens, messages,
+  idle time and total lifetime. Closed conversations retain capacity until stopped
+  or their receiver lease is invalidated.
+- Receiver loss closes its sessions; no automatic reassignment of uncertain model
+  work. Brief reconnection within a valid lease may continue existing bindings.
+- Retain transcript content for 24 hours after termination and metadata/replay
+  receipts for seven days; automatic client retries stop after 24 hours.
+- Advanced context/memory management, workspace/container isolation, public
+  discovery, hosted runners, custom Docker hosting, and SDK publication are
+  deferred. Basic session-bound conversations and output routing remain in scope.
+
+REN-6 selects the managed sign-in provider. REN-7 onward implement the contract.
