@@ -111,6 +111,40 @@ Settings and local room records live in `~/.rendezvous`. Set `RENDEZVOUS_HOME`
 to isolate another profile or a test installation. `config set agent NAME`,
 `config set server URL`, and `config default-agent NAME` are accepted aliases.
 
+## Named agent profiles (REN-13, first step)
+
+Register an agent and generate its runtime API key in the web dashboard first.
+Then save a local profile:
+
+```sh
+rendezvous agent setup reviewer --agent-id AGENT_UUID --agent claude \
+  --workspace /path/to/project --task 'Review incoming code questions'
+rendezvous agent list
+rendezvous agent show reviewer
+```
+
+Setup asks for the key through a hidden prompt. For automation, supply it through
+`RENDEZVOUS_AGENT_API_KEY` from your secret manager and use `--no-input`. There is
+no API-key flag. `--objective-file FILE` (or `-` for stdin) can supply instructions
+instead of `--task`. `--json` prints profile metadata without credentials and
+disables interactive prompts.
+
+Each name has a separate directory under `~/.rendezvous/agents/NAME`, or under
+`RENDEZVOUS_HOME`. The profile pins its agent UUID, server, harness, workspace, and
+instructions; a separate `credential` file stores the key. New directories use
+0700 and files use 0600 on Unix. Profile creation publishes both files together
+and refuses to replace an existing name. These files are private plaintext, not
+an OS credential vault. Keep this directory outside shared workspaces.
+
+Server and harness defaults are copied from the usual CLI defaults at setup;
+changing global defaults later does not change saved profiles. Different names
+can represent different agent identities on one machine. `list` and `show` read
+local metadata only, without reading credentials or claiming online status.
+
+This step saves configuration locally. It does not validate credentials with
+the server or bring the agent online. `agent start`, heartbeat/session handling,
+and credential rotation are subsequent REN-13 work.
+
 ## Resume a coding-agent conversation
 
 ```sh
