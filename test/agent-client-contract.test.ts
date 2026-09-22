@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AgentClient, AgentClientError, AGENT_FRIENDS_PROTOCOL as protocol } from '../src/client/index.js';
+import { AgentClient, AgentClientError, MemoryJournal, AGENT_FRIENDS_PROTOCOL as protocol } from '../src/client/index.js';
 import { Transport } from '../src/client/transport.js';
 import * as wire from '../src/client/validation.js';
 import { uuid, secret } from '../src/validation.js';
@@ -13,6 +13,71 @@ const profile = { protocol, agent: { id: agent, display_name: 'Agent' }, availab
 const acquired = () => ({ protocol, agent_id: agent, receiver, expires_at: new Date(Date.now()+30000).toISOString(), heartbeat_seconds: 10,
   limits: { ...limits, inbound_sessions_per_hour: 10, max_concurrent_sessions: 1, messages_per_minute: 60 } });
 const failure = { protocol, error: { code: 'RATE_LIMITED', message: 'not copied to exceptions' }, request_id: uuid() };
+
+test('definitive acceptance rejection leaves the journal unaccepted and prevents handlers from running', async () => {
+  const journal = new MemoryJournal(), offer = snapshot();
+  const client = new AgentClient({ serverUrl: 'https://relay.example', apiKey: key, journal, fetch: async url => {
+    const path = String(url);
+    if (path.endsWith('/me')) return Response.json(profile);
+    if (path.endsWith('/receiver')) return Response.json(acquired());
+    if (path.includes('/inbox')) return Response.json({ protocol, offers: [offer] });
+    if (path.endsWith('/accept')) return Response.json({ ...failure, error: { code: 'ACCESS_DENIED', message: 'Admission denied' } }, { status: 403 });
+    if (path.endsWith('/release')) return Response.json({ protocol, released: true });
+    throw new Error(`Unexpected request: ${path}`);
+  } });
+  try {
+    await client.connect();
+    const offers = client.offers(), session = (await offers.next()).value!;
+    await offers.return(undefined);
+    await assert.rejects(session.accept(), { code: 'ACCESS_DENIED' });
+    assert.equal((await journal.load())!.sessions[session.id].accepted, false);
+    let calls = 0;
+    assert.throws(() => session.run({ async onMessages() { calls++; }, async stop() { calls++; } }), { code: 'SESSION_NOT_ACTIVE' });
+    assert.equal(calls, 0);
+    assert.equal((await journal.load())!.sessions[session.id].accepted, false);
+  } finally { await client.disconnect(); }
+});
+
+test('uncertain acceptance preserves the journal intent for retry and stop acknowledgement', async () => {
+  const journal = new MemoryJournal(), offer = snapshot();
+  let attempts = 0;
+  const client = new AgentClient({ serverUrl: 'https://relay.example', apiKey: key, journal, maxAttempts: 1, fetch: async url => {
+    const path = String(url);
+    if (path.endsWith('/me')) return Response.json(profile);
+    if (path.endsWith('/receiver')) return Response.json(acquired());
+    if (path.includes('/inbox')) return Response.json({ protocol, offers: [offer] });
+    if (path.endsWith('/accept')) {
+      if (++attempts === 1) throw new Error('Response lost after server acceptance');
+      return Response.json({ protocol, session: offer });
+    }
+    if (path.endsWith('/release')) return Response.json({ protocol, released: true });
+    throw new Error(`Unexpected request: ${path}`);
+  } });
+  try {
+    await client.connect();
+    const offers = client.offers(), session = (await offers.next()).value!;
+    await offers.return(undefined);
+    await assert.rejects(session.accept(), { code: 'NETWORK_ERROR' });
+    assert.equal((await journal.load())!.sessions[session.id].accepted, true);
+    await session.accept();
+    assert.equal(attempts, 2);
+    assert.equal((await journal.load())!.sessions[session.id].accepted, true);
+  } finally { await client.disconnect(); }
+});
+
+test('identity mismatch fails before recovering a pending open from another agent journal', async () => {
+  const journal = new MemoryJournal();
+  await journal.save({ version: 1, origin: 'https://relay.example', agentId: peer, sessions: {},
+    pendingOpen: { id: uuid(), peer: agent, bindingId: uuid(), receiver, firstAttemptAt: Date.now() } });
+  const before = await journal.load(), requests: string[] = [];
+  const client = new AgentClient({ serverUrl: 'https://relay.example', apiKey: key, journal, fetch: async (url, init) => {
+    requests.push(`${init?.method} ${new URL(String(url)).pathname}`);
+    return Response.json(profile);
+  } });
+  await assert.rejects(client.connect(), { code: 'IDENTITY_MISMATCH' });
+  assert.deepEqual(requests, ['GET /api/v1/agents/me']);
+  assert.deepEqual(await journal.load(), before);
+});
 
 test('wire validators accept additive fields and reject incompatible protocols, missing fields and invalid sender shapes', () => {
   assert.equal(wire.profile({ ...profile, future: { enabled: true } }).agent.id, agent);

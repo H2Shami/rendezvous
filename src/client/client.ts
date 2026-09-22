@@ -297,7 +297,13 @@ export class AgentSession {
     const record = this.bound();
     // Record acceptance intent before HTTP: a lost response may already bind the server.
     await this.client.update(s => { s.sessions[this.id].accepted = true; });
-    const { session } = await this.client.call(`/agent-sessions/${this.id}/accept`, wire.session, { body: { receiver: record.receiver, binding_id: record.bindingId } });
+    const { session } = await this.client.call(`/agent-sessions/${this.id}/accept`, wire.session, { body: { receiver: record.receiver, binding_id: record.bindingId } }).catch(async error => {
+      // A definitive rejection did not bind this attempt. Timeouts, lost responses,
+      // and server failures remain uncertain, so retain their cleanup intent.
+      if (error instanceof AgentClientError && error.status !== undefined && error.status >= 400 && error.status < 500 && error.status !== 408)
+        await this.client.update(s => { s.sessions[this.id].accepted = record.accepted; });
+      throw error;
+    });
     await this.remember(session); await this.client.update(s => { s.sessions[this.id].accepted = true; }); return this;
   }
   async reject() { return this.end('reject'); }
