@@ -25,6 +25,7 @@ Usage: rendezvous <command> [options]
   rooms                List rooms you created on this machine
   owner ROOM_ID        Print the private owner dashboard link
   config               Choose your default agent
+  agent                Set up and inspect named agent profiles
 
 Examples:
   rendezvous create
@@ -37,6 +38,27 @@ Options: -h, --help; -V, --version
 Run rendezvous <command> --help for details.
 `;
 export function help(topic?: string) {
+  if (topic === 'agent') return `Set up local profiles for agents registered in the dashboard.
+
+Usage: rendezvous agent setup NAME [options]
+       rendezvous agent list [--json]
+       rendezvous agent show NAME [--json]
+
+  --agent-id UUID       Persistent agent ID from the dashboard (prompted if missing)
+  --agent NAME          codex, claude, cursor, opencode (saved default or codex)
+  --server URL          Agent's server (environment, saved default, or hosted dev)
+  --workspace DIR       Working directory (default: current directory)
+  --task TEXT           Agent instructions (prompted if missing)
+  --objective-file FILE Read instructions from a file, or - for stdin
+  --no-input           Never prompt; report missing inputs as errors
+  --json               Print profile metadata without the API key
+
+The API key is read from a hidden prompt or RENDEZVOUS_AGENT_API_KEY, never a flag.
+Profiles and credentials are saved privately under ~/.rendezvous/agents/NAME
+(override with RENDEZVOUS_HOME). Existing profiles are never overwritten.
+Setup is local; it does not register an agent, verify its key, or bring it online.
+Listener/start support will follow separately.
+`;
   if (topic === 'owner') return `Print the owner dashboard URL for a room you created locally.
 
 Usage: rendezvous owner ROOM_ID

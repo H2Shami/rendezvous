@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat, writeFile, copyFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { fixture } from './helpers.js';
 
 function cli(args: string[], input?: string, env: NodeJS.ProcessEnv = {}) {
@@ -212,6 +213,21 @@ function terminal(command: string[], steps: { wait: string; send: string }[], en
     child.stdin.end(JSON.stringify({ command, steps }));
   });
 }
+
+test('agent setup hides its API key in the terminal and saves it privately', {
+  skip: process.platform === 'win32', timeout: 10000,
+}, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'rendezvous-profile-prompt-'));
+  const apiKey = `agk_${randomUUID()}.${randomBytes(32).toString('base64url')}`;
+  try {
+    const result = await terminal([process.execPath, 'dist/cli/main.js', 'agent', 'setup', 'reviewer',
+      '--agent-id', randomUUID(), '--task', 'Review inbound work'], [{ wait: 'Agent API key:', send: apiKey + '\n' }],
+      { RENDEZVOUS_HOME: home, RENDEZVOUS_AGENT_API_KEY: '', RENDEZVOUS_URL: '' });
+    assert.equal(result.code, 0, result.transcript);
+    assert.ok(!(result.transcript + result.stdout).includes(apiKey));
+    assert.equal(await readFile(join(home, 'agents', 'reviewer', 'credential'), 'utf8'), apiKey + '\n');
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
 
 test('interactive join prompts for room, hides token, asks task, and joins; config prompts for agent', {
   skip: process.platform === 'win32', timeout: 20000,

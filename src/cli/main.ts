@@ -34,6 +34,7 @@ import {
 } from "./config.js";
 import { Prompts, UsageError } from "./prompts.js";
 import { help } from "./help.js";
+import { createProfile, listProfiles, profileName, readProfile } from './profiles.js';
 
 export const DEFAULT_SERVER = "https://dev.userendezvous.com";
 const invocation =
@@ -124,6 +125,7 @@ async function main() {
         "no-join": { type: "boolean" },
         join: { type: "boolean" },
         agent: { type: "string" },
+        "agent-id": { type: "string" },
         session: { type: "string" },
         task: { type: "string" },
         "objective-file": { type: "string" },
@@ -176,10 +178,11 @@ async function main() {
     rooms: ["json"],
     owner: ["room-file", "json"],
     config: ["json", "no-input"],
+    agent: ["agent-id", "agent", "server", "workspace", "task", "objective-file", "json", "no-input"],
   };
   if (!allowed[command])
     throw new UsageError(
-      "Unknown command. Choose create, join, rooms, owner, or config.",
+      "Unknown command. Choose create, join, rooms, owner, config, or agent.",
     );
   for (const key of Object.keys(v))
     if (!allowed[command].includes(key))
@@ -223,6 +226,35 @@ async function main() {
     if (!v.quiet) console.error(statusLine(message));
   };
   try {
+    if (command === 'agent') {
+      const [action, name] = rest;
+      if (!['setup', 'list', 'show'].includes(action) || rest.length !== (action === 'list' ? 1 : 2))
+        throw new UsageError('Use agent setup NAME, agent list, or agent show NAME.');
+      if (action !== 'setup' && Object.keys(v).some(key => key !== 'json' && key !== 'no-input'))
+        throw new UsageError('Only --json and --no-input are supported when inspecting profiles.');
+      if (action === 'list') {
+        const profiles = await listProfiles();
+        console.log(v.json ? JSON.stringify(profiles, null, 2) : profiles.map(p => `${p.name}: ${p.agent} · ${p.agentId} · ${p.origin}`).join('\n') || 'No saved agent profiles. Use agent setup NAME.');
+        return;
+      }
+      profileName(name);
+      if (action === 'show') {
+        const profile = await readProfile(name);
+        console.log(v.json ? JSON.stringify(profile, null, 2) : `Profile: ${profile.name}\nAgent ID: ${profile.agentId}\nServer: ${profile.origin}\nHarness: ${profile.agent}\nWorkspace: ${profile.workspace}\nInstructions: ${profile.instructions}`);
+        return;
+      }
+      const agentId = v['agent-id'] ?? await prompts.ask('Agent ID', 'Copy the agent UUID from the dashboard or use --agent-id UUID.');
+      const instructions = v.task ?? (v['objective-file'] ? await objectiveFile(v['objective-file'], controller.signal) :
+        await prompts.ask('Agent instructions', 'Use --task TEXT or --objective-file FILE.'));
+      const apiKey = process.env.RENDEZVOUS_AGENT_API_KEY || await prompts.ask('Agent API key',
+        'Provide RENDEZVOUS_AGENT_API_KEY for noninteractive setup.', { secret: true });
+      controller.signal.throwIfAborted();
+      const profile = await createProfile({ name, agentId, instructions, agent: agentName(v.agent ?? config.agent ?? 'codex'),
+        origin: serverOrigin(v.server ?? (process.env.RENDEZVOUS_URL || config.server || DEFAULT_SERVER)),
+        workspace: v.workspace ?? process.cwd() }, apiKey);
+      console.log(v.json ? JSON.stringify(profile, null, 2) : `Saved agent profile ${name}. Inspect it with ${invocation} agent show ${name}.`);
+      return;
+    }
     if (command === 'create' || command === 'join') log(rendezvousBanner());
     if (command === 'owner') {
       let owner: string;
