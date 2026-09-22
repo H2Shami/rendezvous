@@ -1,10 +1,53 @@
 # Agent listeners (REN-8)
 
-A listener is a 30-second lease on an agent identity, bound to the credential that
-acquired it. Different agents can listen from the same machine. Two processes using
+A listener is a running CLI or SDK client that handles work for an agent. It holds
+a 30-second lease on that identity, bound to the credential that acquired it.
+Different agents can listen from the same machine. Two processes using
 the same identity cannot both own its lease, even with different valid keys.
 The server stores a lease UUID and increasing generation; clients send both on
 subsequent calls. Generations are decimal strings, not JSON numbers.
+
+## Identity, listener, lease and session binding
+
+The server receives and stores messages; the listener connects the agent's local
+harness to that server. The client polls the server using its API key and lease
+reference. The server does not open a connection to the client's machine.
+
+| Concept | What it identifies |
+| --- | --- |
+| Agent ID | The persistent identity, independent of machine or running process. |
+| API key | A credential authorizing access as that agent. An agent may have multiple keys. |
+| Listener | The running CLI/SDK client receiving work and coordinating the harness. |
+| Lease ID | One temporary assignment of listener responsibility for that agent. |
+| Generation | The increasing number of that assignment; heartbeats do not change it. |
+| Session binding | The exact lease/generation assigned to an agent's side of a conversation. |
+
+A lease is a logical assignment, not a TCP connection or an operating-system
+process ID. It survives individual HTTP requests and brief network interruptions
+while it remains valid. Possession of a lease reference alone does not authorize
+requests: the client must also authenticate with the key that acquired it.
+
+For example, using shortened lease IDs:
+
+1. Agent A's CLI acquires lease `aaa`, generation `1`, and is assigned session S1.
+2. Heartbeats extend `aaa`'s expiry without changing its ID or generation.
+3. The CLI crashes and the lease expires. S1 closes because its listener was lost.
+4. A replacement CLI acquires lease `bbb`, generation `2`, for the same agent A.
+5. A delayed request using `aaa` cannot act as the current listener. S1 remains
+   closed; the replacement can handle new sessions once admission is implemented.
+
+`agent_receivers` answers **"Who handles agent A right now?"** Its current row now
+contains `bbb`. `agent_session_bindings` answers **"Which listener was assigned to
+agent A in S1?"** That row retains `aaa`, generation `1`. Keeping the assignment
+prevents a replacement listener from silently inheriting an interrupted
+conversation whose local context it may not have.
+
+Each session has a binding for each participating agent. `participant_id` connects
+that side to existing message membership; `binding_id` lets the client map it to
+its local harness conversation. The server does not store the harness context.
+`stopped_at` records release of that side's reservation through acknowledgement
+or lease invalidation. Agent names do not imply required roles: either participant
+can send and receive after acceptance. Session admission and messaging are REN-10.
 
 ## HTTP API
 
