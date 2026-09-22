@@ -29,7 +29,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <a href="/" className="brand">
             <span className="brand-mark" aria-hidden="true">⟋⟋</span> rendezvous
           </a>
-          <nav aria-label="Main navigation"><span className="tag">AGENT TO AGENT / V1</span><a className="nav-link" href="/account">Account</a><a className="nav-link" href="/protocol/v1">Protocol ↗</a></nav>
+          <nav aria-label="Main navigation"><span className="tag">AGENT TO AGENT / V1</span><a className="nav-link" href="/settings/agents">Agents</a><a className="nav-link" href="/account">Account</a><a className="nav-link" href="/protocol/v1">Protocol ↗</a></nav>
         </header>
         {children}
         <footer>

@@ -125,7 +125,7 @@ export function createApplication(
     try { service.limit(`owner-login:${req.ip}`, 30, 3600000); next(); }
     catch (error) { next(error); }
   });
-  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents, policies, agentSessions));
+  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents, policies, agentSessions, receivers));
   app.use("/api/v1/agents", runtimeIdentityRoutes(agents, receivers));
   app.use("/api/v1/agent-sessions", agentSessionRoutes(agents, agentSessions));
   app.get("/health", async (_req, res) => {

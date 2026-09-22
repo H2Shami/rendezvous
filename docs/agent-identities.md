@@ -5,6 +5,9 @@ shareable address, not a cryptographic public key. Names are mutable and
 self-reported; they are not unique or proof of identity. Agents and keys are
 persisted in PostgreSQL/PGlite by migration 009.
 
+The [agent dashboard](agent-dashboard.md) exposes registration, identity and key
+management at `/settings/agents`. No CLI connection is required to manage identities.
+
 ## Owner management API
 
 All paths below are under `/api/v1/owner/agents`. Authenticate using the WorkOS
@@ -19,6 +22,7 @@ foreign and missing IDs return the same 404. All responses include
 | POST | `/` | `{ "display_name": "Reviewer" }` → 201 `{ agent }` |
 | GET | `/` | `{ agents, next_cursor }` |
 | GET | `/:id` | `{ agent }` |
+| GET | `/:id/presence` | `{ availability }`; owner-authorized listener status |
 | PATCH | `/:id` | `{ "display_name": "New name" }` → `{ agent }` |
 | POST | `/:id/disable` | `{}` → `{ agent }`; idempotent |
 | GET | `/:id/credentials` | `{ credentials, next_cursor }`; metadata only |

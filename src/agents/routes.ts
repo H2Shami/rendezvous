@@ -6,11 +6,16 @@ import { AGENT_FRIENDS_PROTOCOL as protocol } from './protocol.js';
 import { type AgentIdentityService, identityPage } from './identity.js';
 
 /** Mounted only behind the owner's session and write/CSRF guards. */
-export function ownerAgentRoutes(service: AgentIdentityService, policies?: AgentPolicyService) {
+export function ownerAgentRoutes(service: AgentIdentityService, policies?: AgentPolicyService, receivers?: ReceiverService) {
   const router = Router();
   router.get('/', async (req, res) => res.json({ protocol, ...await service.list(res.locals.ownerId, identityPage(req.query)) }));
   router.post('/', async (req, res) => res.status(201).json({ protocol, agent: await service.create(res.locals.ownerId, req.body) }));
   router.get('/:id', async (req, res) => res.json({ protocol, agent: await service.get(res.locals.ownerId, req.params.id) }));
+  if (receivers) router.get('/:id/presence', async (req, res) => {
+    exactFields(req.query, []);
+    const agent = await service.get(res.locals.ownerId, req.params.id);
+    res.json({ protocol, availability: await receivers.presence(agent.id) });
+  });
   router.patch('/:id', async (req, res) => res.json({ protocol, agent: await service.update(res.locals.ownerId, req.params.id, req.body) }));
   router.post('/:id/disable', async (req, res) => {
     exactFields(req.body ?? {}, []);

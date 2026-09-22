@@ -1,3 +1,4 @@
+import type { ReceiverService } from '../agents/receivers.js';
 import type { AgentSessionService } from '../agents/sessions.js';
 import { identityPage } from '../agents/identity.js';
 import { exactFields } from '../validation.js';
@@ -10,7 +11,7 @@ import type { AgentIdentityService } from '../agents/identity.js';
 import { ownerAgentRoutes } from '../agents/routes.js';
 import { HttpError, requireThat } from '../validation.js';
 
-export function ownerRoutes(service: OwnerService, provider: IdentityProvider | undefined, origin: string, agents?: AgentIdentityService, policies?: AgentPolicyService, sessions?: AgentSessionService) {
+export function ownerRoutes(service: OwnerService, provider: IdentityProvider | undefined, origin: string, agents?: AgentIdentityService, policies?: AgentPolicyService, sessions?: AgentSessionService, receivers?: ReceiverService) {
   const router = Router();
   const secure = new URL(origin).protocol === 'https:';
   const sessionName = secure ? '__Host-rv-owner' : 'rv-owner';
@@ -87,7 +88,7 @@ export function ownerRoutes(service: OwnerService, provider: IdentityProvider | 
     }
     res.locals.ownerId = owner.id;
     next();
-  }, ownerAgentRoutes(agents, policies));
+  }, ownerAgentRoutes(agents, policies, receivers));
   if (sessions) {
     router.use('/agent-sessions', async (req, res, next) => {
       const { identity, owner } = await authenticated(req, res);

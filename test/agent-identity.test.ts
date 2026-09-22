@@ -86,7 +86,7 @@ test('owner APIs enforce scope, CSRF, validation, bounded pagination and credent
     const { api_key: key, credential } = issued.body;
     for (const [suffix, method, body] of [
       ['', 'GET', undefined], ['', 'PATCH', { display_name: 'Stolen' }], ['/disable', 'POST', {}],
-      ['/credentials', 'GET', undefined], ['/credentials', 'POST', {}],
+      ['/credentials', 'GET', undefined], ['/credentials', 'POST', {}], ['/presence', 'GET', undefined],
       [`/credentials/${credential.id}`, 'DELETE', undefined], [`/credentials/${credential.id}/rotate`, 'POST', {}],
     ] as const) assert.equal((await f.call(`${path}${suffix}`, method, body, 'b')).status, 404);
     assert.deepEqual((await f.call('owner/agents', 'GET', undefined, 'b')).body.agents, []);
@@ -94,6 +94,11 @@ test('owner APIs enforce scope, CSRF, validation, bounded pagination and credent
       assert.equal((await f.call(path, 'PATCH', { display_name: 'Changed' }, 'a', headers)).status, 403);
     assert.equal((await f.call(`${path}/credentials`, 'POST', {}, 'a', { Cookie: '', Authorization: `Bearer ${key}` })).status, 401);
     assert.equal((await f.call(`${path}/credentials`, 'POST', {}, 'a', { Cookie: `__Host-rv-owner=${key}` })).status, 401);
+    const presence = await f.call(`${path}/presence`);
+    assert.equal(presence.status, 200); assert.equal(presence.body.availability, 'offline');
+    assert.equal(presence.headers.get('cache-control'), 'no-store');
+    assert.equal((await f.call(`${path}/presence`, 'GET', undefined, 'a', { Cookie: '', Authorization: `Bearer ${key}` })).status, 401);
+    assert.equal((await f.call(`${path}/presence?secret=no`)).status, 400);
     assert.equal((await f.call('agents/me')).status, 401); // Owner cookie cannot act as an agent.
     const profile = await f.call('agents/me', 'GET', undefined, 'a', { Authorization: `Bearer ${key}` });
     assert.deepEqual(profile.body.agent, { id, display_name: 'Agent' });

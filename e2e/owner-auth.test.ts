@@ -34,6 +34,7 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
     }
     browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
     const context = await browser.newContext();
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
     // Hosted logout is external UI; emulate its redirect for the fake WorkOS session.
     await context.route('https://api.workos.com/user_management/sessions/logout?**', async route => {
       assert.equal(new URL(route.request().url()).searchParams.get('session_id'), workos.sessionId);
@@ -52,13 +53,47 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
     assert.equal(await page.evaluate(() => document.cookie.includes('rv-owner')), false);
     await page.reload();
     await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor();
+    // Register and issue through the dashboard, then use the key as a real runtime.
+    await page.getByRole('link', { name: 'Manage agents ↗', exact: true }).click();
+    await page.getByLabel('Agent name', { exact: true }).fill('Browser agent draft');
+    await page.getByRole('button', { name: 'Register agent', exact: true }).click();
+    await page.getByRole('heading', { name: 'Browser agent draft', exact: true }).waitFor();
+    const registeredId = await page.getByLabel('Public agent ID', { exact: true }).inputValue();
+    await page.getByText('Offline', { exact: true }).waitFor();
+    await page.getByLabel('Agent name', { exact: true }).fill('Browser agent');
+    await page.getByRole('button', { name: 'Save name', exact: true }).click();
+    await page.getByRole('heading', { name: 'Browser agent', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Generate API key', exact: true }).click();
+    await page.getByLabel('New API key', { exact: true }).waitFor();
+    const dashboardKey = await page.getByLabel('New API key', { exact: true }).inputValue();
+    assert.ok(dashboardKey.startsWith('agk_'));
+    await page.getByRole('button', { name: 'Copy API key', exact: true }).click();
+    await page.getByText('Copied', { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), dashboardKey);
+    await page.evaluate(() => navigator.clipboard.writeText(''));
+    assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+    assert.equal(page.url().includes(dashboardKey), false);
+    await page.getByRole('button', { name: 'I saved the key', exact: true }).click();
+    await page.reload();
+    await page.getByRole('heading', { name: 'Browser agent', exact: true }).waitFor();
+    assert.equal(await page.locator('#new-api-key').count(), 0);
+    assert.equal((await page.content()).includes(dashboardKey), false);
+    // A failed presence refresh must not present the previous status as current.
+    await page.route('**/api/v1/owner/agents/*/presence', route => route.fulfill({ status: 503, contentType: 'application/json', body: '{}' }));
+    await page.reload();
+    await page.getByText('Status unavailable', { exact: true }).waitFor();
+    await page.unroute('**/api/v1/owner/agents/*/presence');
+    await page.reload();
+    await page.getByText('Offline', { exact: true }).waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: '/tmp/rendezvous-agent-settings.png', fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
     // Management requests use the real SDK session and CSRF through Next's proxy.
-    const createdAgent = await page.evaluate(async () => {
+    const createdAgent = await page.evaluate(async ({ registeredId, dashboardKey }) => {
       const me = await (await fetch('/api/v1/owner/me')).json();
       const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': me.csrf_token };
-      const created = await fetch('/api/v1/owner/agents', { method: 'POST', headers, body: JSON.stringify({ display_name: 'Browser agent' }) });
-      if (created.status !== 201) throw new Error('Agent creation failed');
-      const { agent } = await created.json();
+      const { agent } = await (await fetch(`/api/v1/owner/agents/${registeredId}`)).json();
       const peerResponse = await fetch('/api/v1/owner/agents', { method: 'POST', headers, body: JSON.stringify({ display_name: 'Browser peer' }) });
       if (peerResponse.status !== 201) throw new Error('Peer creation failed');
       const { agent: peer } = await peerResponse.json();
@@ -69,9 +104,9 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
       if (!policy.allow_outbound || policy.allow_inbound) throw new Error('Incorrect policy flags');
       if ((await fetch(policyPath, { method: 'DELETE', headers })).status !== 200) throw new Error('Policy deletion failed');
       if ((await fetch(policyPath)).status !== 404) throw new Error('Deleted policy still present');
-      const issued = await fetch(`/api/v1/owner/agents/${agent.id}/credentials`, { method: 'POST', headers, body: '{}' });
-      if (issued.status !== 201) throw new Error('Credential issuance failed');
-      const { credential, api_key } = await issued.json();
+      const { credentials } = await (await fetch(`/api/v1/owner/agents/${agent.id}/credentials`)).json();
+      const credential = credentials.find((c: { revoked_at: string | null }) => !c.revoked_at);
+      const api_key = dashboardKey;
       const runtime = await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${api_key}` } });
       if ((await runtime.json()).agent.id !== agent.id) throw new Error('Wrong runtime identity');
       const receiverHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${api_key}` };
@@ -97,8 +132,11 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
       const sent = await fetch(`/api/v1/agent-sessions/${session.id}/messages`, { method: 'POST', headers: receiverHeaders, body: JSON.stringify({ receiver, client_message_id: crypto.randomUUID(), content: 'Agent hello' }) });
       if (sent.status !== 201) throw new Error('Agent send failed');
       return { agentId: agent.id, sessionId: session.id, credentialId: credential.id, apiKey: api_key };
-    });
+    }, { registeredId, dashboardKey });
     const { agentId, sessionId } = createdAgent;
+    await page.reload();
+    await page.getByText('Online · busy', { exact: true }).waitFor();
+    await page.goto(`${origin}/account`);
     await page.getByRole('button', { name: 'Refresh sessions', exact: true }).click();
     await page.getByRole('link', { name: 'Browser agent ↔ Browser peer', exact: true }).click();
     assert.equal(page.url(), `${origin}/rooms/${sessionId}`);
@@ -116,12 +154,25 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
     assert.ok(human.rows[0].sender_owner_id);
     await page.locator('#close-session').click();
     await page.locator('#status').filter({ hasText: 'CLOSED' }).waitFor();
-    await page.evaluate(async ({ agentId, credentialId, apiKey }) => {
-      const me = await (await fetch('/api/v1/owner/me')).json();
-      const revoked = await fetch(`/api/v1/owner/agents/${agentId}/credentials/${credentialId}`, { method: 'DELETE', headers: { 'X-CSRF-Token': me.csrf_token } });
-      if (revoked.status !== 200) throw new Error('Credential revocation failed');
-      if ((await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${apiKey}` } })).status !== 401) throw new Error('Revoked key accepted');
-    }, createdAgent);
+    await page.goto(`${origin}/settings/agents/${agentId}`);
+    page.on('dialog', dialog => void dialog.accept());
+    await page.getByRole('button', { name: 'Rotate key', exact: true }).click();
+    await page.getByLabel('New API key', { exact: true }).waitFor();
+    const replacement = await page.getByLabel('New API key', { exact: true }).inputValue();
+    assert.notEqual(replacement, dashboardKey);
+    const statuses = await page.evaluate(async ({ oldKey, newKey }) => {
+      return [(await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${oldKey}` } })).status,
+        (await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${newKey}` } })).status];
+    }, { oldKey: dashboardKey, newKey: replacement });
+    assert.deepEqual(statuses, [401, 200]);
+    await page.getByRole('button', { name: 'I saved the key', exact: true }).click();
+    await page.getByRole('button', { name: 'Revoke key', exact: true }).click();
+    await page.getByText('Key revoked.', { exact: true }).waitFor();
+    const revokedStatus = await page.evaluate(async key => (await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${key}` } })).status, replacement);
+    assert.equal(revokedStatus, 401);
+    await page.getByRole('button', { name: 'Disable agent', exact: true }).click();
+    await page.getByRole('button', { name: 'Agent disabled', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Generate API key', exact: true }).isDisabled(), true);
     const ended = await f.db.query<{ ended_at: Date }>('SELECT ended_at FROM agent_receivers WHERE agent_id=$1', [agentId]);
     assert.ok(ended.rows[0].ended_at);
     await page.goto(`${origin}/account`);
