@@ -252,7 +252,6 @@ test('restart reconciliation and retention preserve receipts without retaining p
     const { id, body } = await f.open(), message = f.message(f.a, 'Payload to purge');
     const sent = await f.call(f.a, `/${id}/messages`, message); assert.equal(sent.status, 201);
     const restarted = new AgentSessionService(f.db, f.app.receivers, f.policies, f.now);
-    await f.db.exec(await readFile(new URL('../migrations/002_http.sql', import.meta.url), 'utf8'));
     await f.db.exec(await readFile(new URL('../migrations/012_agent_sessions.sql', import.meta.url), 'utf8'));
     assert.equal((await f.db.query('SELECT id FROM participants WHERE session_id=$1 AND revoked_at IS NOT NULL', [id])).rows.length, 0);
     assert.equal((await f.db.query<{ status: string }>('SELECT status FROM sessions WHERE id=$1', [id])).rows[0].status, 'ACTIVE');
@@ -327,6 +326,8 @@ test('agent session messages and receipts survive closing and reopening durable 
     await s.sessions.accept(b.p, id, { receiver: b.receiver, binding_id: uuid() });
     const message = { receiver: a.receiver, client_message_id: uuid(), content: 'Durable message' };
     const original = await s.sessions.send(a.p, id, message);
+    // Adopt a database created by REN-10 before the migration ledger was added.
+    await db.exec('DROP TABLE schema_migrations');
     await db.close(); db = await openDatabase({ dataDir: dir }); s = services();
     await s.receivers.cleanup(); await s.sessions.cleanup();
     const authenticated = await s.identities.authenticate(a.key.api_key);

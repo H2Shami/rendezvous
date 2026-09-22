@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { applyMigrations } from "./migrations.js";
 import pg from "pg";
 import { PGlite } from "@electric-sql/pglite";
 
@@ -54,39 +54,7 @@ export async function openDatabase({
     };
   }
   try {
-    await db.transaction(async (tx) => {
-      await tx.exec(
-        await readFile(
-          new URL("../migrations/001_initial.sql", import.meta.url),
-          "utf8",
-        ),
-      );
-      await tx.exec(
-        await readFile(
-          new URL("../migrations/002_http.sql", import.meta.url),
-          "utf8",
-        ),
-      );
-      await tx.exec(
-        await readFile(
-          new URL("../migrations/003_owner_messages.sql", import.meta.url),
-          "utf8",
-        ),
-      );
-      await tx.exec(
-        await readFile(
-          new URL("../migrations/005_reusable_invites.sql", import.meta.url),
-          "utf8",
-        ),
-      );
-      await tx.exec(await readFile(new URL("../migrations/006_owner_auth.sql", import.meta.url), "utf8"));
-      await tx.exec(await readFile(new URL("../migrations/007_owner_login_flow.sql", import.meta.url), "utf8"));
-      await tx.exec(await readFile(new URL("../migrations/008_workos_auth.sql", import.meta.url), "utf8"));
-      await tx.exec(await readFile(new URL("../migrations/009_agent_identities.sql", import.meta.url), "utf8"));
-      await tx.exec(await readFile(new URL("../migrations/010_agent_receivers.sql", import.meta.url), "utf8"));
-      await tx.exec(await readFile(new URL("../migrations/011_agent_peer_policies.sql", import.meta.url), "utf8"));
-      await tx.exec(await readFile(new URL("../migrations/012_agent_sessions.sql", import.meta.url), "utf8"));
-    });
+    await applyMigrations(db, Boolean(databaseUrl));
   } catch (error) {
     await db.close();
     throw error;

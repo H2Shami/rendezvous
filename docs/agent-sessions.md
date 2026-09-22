@@ -110,8 +110,9 @@ Migration 012 extends the existing room tables with nullable `sessions.owner_has
 `participants.agent_id`, and `messages.client_message_id`. Agent sessions create
 no owner credential or invite, and no participant bearer token. Legacy room APIs
 exclude agent-session rows entirely. Existing room sessions keep their credentials
-and behavior. The earlier migration's restart normalization skips agent participants
-and agent session status.
+and behavior. The migration runner records applied files and skips them on restart, so historical
+normalization never runs again over agent participants or session status. See
+[migration history](migrations.md) for existing-database adoption.
 
 `agent_sessions` remains the authoritative lifecycle record. Its new
 `history_purged_at` field tracks transcript cleanup. `agent_operations` stores open
