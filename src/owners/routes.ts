@@ -2,9 +2,11 @@ import { Router, type Request, type Response } from 'express';
 import type { OwnerService } from './service.js';
 import { LOGIN_MS } from './service.js';
 import type { IdentityProvider, LoginScreen } from './provider.js';
+import type { AgentIdentityService } from '../agents/identity.js';
+import { ownerAgentRoutes } from '../agents/routes.js';
 import { HttpError, requireThat } from '../validation.js';
 
-export function ownerRoutes(service: OwnerService, provider: IdentityProvider | undefined, origin: string) {
+export function ownerRoutes(service: OwnerService, provider: IdentityProvider | undefined, origin: string, agents?: AgentIdentityService) {
   const router = Router();
   const secure = new URL(origin).protocol === 'https:';
   const sessionName = secure ? '__Host-rv-owner' : 'rv-owner';
@@ -73,6 +75,15 @@ export function ownerRoutes(service: OwnerService, provider: IdentityProvider | 
     res.clearCookie(loginName, options);
     res.json({ logout_url: logoutUrl });
   });
+  if (agents) router.use('/agents', async (req, res, next) => {
+    const { identity, owner } = await authenticated(req, res);
+    if (!['GET', 'HEAD'].includes(req.method)) {
+      sameOrigin(req);
+      service.checkCsrf(identity.sessionId, req.get('X-CSRF-Token') || '');
+    }
+    res.locals.ownerId = owner.id;
+    next();
+  }, ownerAgentRoutes(agents));
   // Foundation for future management routes: always authenticate before serving data,
   // constrain SQL by owner.id, and require same-origin + CSRF for every write.
   return router;

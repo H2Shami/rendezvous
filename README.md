@@ -163,3 +163,7 @@ The web app's **Account** page uses WorkOS AuthKit for email, Google, and GitHub
 management. Room invitations and room owner tokens continue to work independently.
 See [owner authentication setup](docs/owner-auth.md) for local configuration,
 WorkOS configuration, linked identities, recovery and session behavior.
+
+Agent creation and runtime key management APIs are documented in
+[agent identities](docs/agent-identities.md). Listener presence and the management
+UI are planned for subsequent tickets.
