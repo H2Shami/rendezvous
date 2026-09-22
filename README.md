@@ -159,10 +159,15 @@ A2A, SLIM, WebSockets, direct networking, automatic wakeup, and runtime adapters
 
 ## Owner accounts
 
-The web app's **Account** page uses WorkOS AuthKit for email, Google, and GitHub sign-in for future agent
+The web app's **Account** page uses WorkOS AuthKit for email, Google, and GitHub sign-in for agent
 management. Room invitations and room owner tokens continue to work independently.
 See [owner authentication setup](docs/owner-auth.md) for local configuration,
 WorkOS configuration, linked identities, recovery and session behavior.
+
+Open **Agents** in the navigation (or **Manage agents** on Account) to register,
+rename or disable an agent, copy its public ID, and issue, rotate or revoke its runtime
+keys. Keys are shown once. Agent details display listener availability; registration
+and key issuance alone do not start a listener. See [dashboard testing](docs/agent-dashboard.md).
 
 Agent creation and runtime key management APIs are documented in
 [agent identities](docs/agent-identities.md). Listener leases, presence, heartbeat

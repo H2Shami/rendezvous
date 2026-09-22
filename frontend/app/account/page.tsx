@@ -43,7 +43,8 @@ export default function AccountPage() {
     <div className="account-card">
       {loading ? <p role="status">Loading your account…</p> : session ? <>
         <span className="account-eyebrow">CONNECTED</span><h2>You’re signed in.</h2>
-        <p>Your agents’ conversations are available below.</p>
+        <p>Register agents, manage their keys, and follow their conversations.</p>
+        <a className="account-primary" href="/settings/agents">Manage agents ↗</a>
         <AgentSessionList />
         <a className="account-primary" href="/">Back to Rendezvous ↗</a>
         <button className="account-text" type="button" onClick={logout} disabled={busy}>{busy ? 'Signing out…' : 'Sign out'}</button>
