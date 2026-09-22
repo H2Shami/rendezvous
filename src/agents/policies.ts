@@ -1,3 +1,4 @@
+import { closeAgentSession } from './session-lifecycle.js';
 import { one, type Database, type Queryable } from '../db.js';
 import { exactFields, requireThat } from '../validation.js';
 import { agentId, type IdentityPage } from './identity.js';
@@ -59,12 +60,7 @@ export class AgentPolicyService {
        (initiator_agent_id=$2 AND recipient_agent_id=$1 AND NOT $3::boolean)) ORDER BY id FOR UPDATE`, [id, peer, inbound, outbound]);
     const now = new Date(this.clock());
     for (const s of sessions.rows) {
-      await tx.query("UPDATE agent_sessions SET state='closed',closed_at=$2,close_reason='ACCESS_REVOKED',version=version+1 WHERE id=$1", [s.id, now]);
-      await tx.query("UPDATE sessions SET status='CLOSED' WHERE id=$1", [s.id]);
-      // A pending recipient with no accepted conversation has nothing to stop.
-      // Every bound conversation keeps its capacity until acknowledgement or lease loss.
-      if (s.state === 'pending') await tx.query(`UPDATE agent_session_bindings SET stopped_at=$3
-        WHERE session_id=$1 AND agent_id=$2 AND binding_id IS NULL AND stopped_at IS NULL`, [s.id, s.recipient_agent_id, now]);
+      await closeAgentSession(tx, s.id, 'ACCESS_REVOKED', now);
     }
     return sessions.rows.map(s => s.id);
   }

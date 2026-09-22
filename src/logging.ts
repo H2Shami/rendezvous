@@ -20,6 +20,7 @@ export function safePath(url: string) {
     /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
     ":id",
   );
+  if (/^\/api\/v1\/agent-sessions(?:\/:id(?:\/(?:accept|reject|messages|close|stopped))?)?$/.test(normalized)) return normalized;
   if (/^\/api\/v1\/owner\/agents(?:\/:id(?:\/(?:disable|credentials)(?:\/:id(?:\/rotate)?)?)?)?$/.test(normalized)) return normalized;
   if (/^\/api\/v1\/owner\/agents\/:id\/peers(?:\/:id)?$/.test(normalized)) return normalized;
   if (/^\/api\/v1\/agents\/me(?:\/receiver(?:\/(?:heartbeat|release|inbox))?)?$/.test(path)) return path;

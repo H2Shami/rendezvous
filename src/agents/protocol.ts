@@ -1,4 +1,4 @@
-/** Agent Friends wire contract. Identity, policy and receiver endpoints are implemented; session admission/routing follows.
+/** Agent Friends wire contract. Identity, policy, receiver and session endpoints are implemented.
  * See docs/agent-friends-protocol.md. Keep independent of DB, CLI and server. */
 export const AGENT_FRIENDS_PROTOCOL = "agent-friends-http-v1" as const;
 export type UUID = string;

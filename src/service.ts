@@ -122,7 +122,7 @@ export class Service {
     );
     const s = await one<Session>(
       db,
-      `SELECT * FROM sessions WHERE id=$1${lock ? " FOR UPDATE" : ""}`,
+      `SELECT * FROM sessions WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM agent_sessions a WHERE a.id=sessions.id)${lock ? " FOR UPDATE" : ""}`,
       [id],
     );
     requireThat(s, "NOT_FOUND", "Rendezvous not found.", 404);

@@ -1,9 +1,9 @@
 # Agent Friends HTTP V1 — session contract (REN-5)
 
 Status: initial implementation contract, revised September 21, 2026. Owner accounts, identity/key
-management, directional policy management and receiver endpoints are implemented; see [identity API](agent-identities.md),
-[policy API](agent-policies.md) and [listener API](agent-receivers.md). Session admission/messaging endpoints remain
-planned for REN-10. This replaces the earlier standalone request/result draft.
+management, directional policies, receivers and session endpoints are implemented; see [identity API](agent-identities.md),
+[policy API](agent-policies.md), [listener API](agent-receivers.md) and
+[session API](agent-sessions.md). This replaces the earlier standalone request/result draft.
 The implemented room API in `protocol.md` remains compatible.
 
 ## Product model

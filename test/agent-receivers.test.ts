@@ -88,7 +88,7 @@ test('acquire replay never renews or repeats takeover, and ended receipts fence 
   } finally { await f.stop(); }
 });
 
-test('inbox offers are nondestructive at capacity; takeover closes bound work and tells the surviving peer to stop', async () => {
+test('inbox offers are nondestructive at capacity; takeover closes work and releases an unaccepted recipient', async () => {
   const f = await setup();
   try {
     const a = (await f.acquire(f.a.principal)).body.receiver, b = (await f.acquire(f.b.principal)).body.receiver;
@@ -103,8 +103,8 @@ test('inbox offers are nondestructive at capacity; takeover closes bound work an
     await f.acquire(f.a.principal, uuid(), true);
     const closed = (await f.db.query<{ state: string; close_reason: string }>('SELECT state,close_reason FROM agent_sessions WHERE id=$1', [id])).rows[0];
     assert.deepEqual(closed, { state: 'closed', close_reason: 'RECEIVER_LOST' });
-    assert.deepEqual((await f.receivers.heartbeat(f.b.principal, { receiver: b, accepting_sessions: true })).sessions_to_stop, [id]);
-    assert.equal(await f.receivers.presence(f.b.agent.id), 'busy'); // Until local stop acknowledgement.
+    assert.deepEqual((await f.receivers.heartbeat(f.b.principal, { receiver: b, accepting_sessions: true })).sessions_to_stop, []); // Unaccepted recipient has no conversation to stop.
+    assert.equal(await f.receivers.presence(f.b.agent.id), 'available'); // Pending, unaccepted reservation was released.
     await f.db.query('UPDATE agent_session_bindings SET stopped_at=now() WHERE agent_id=$1 AND session_id=$2', [f.b.agent.id, id]);
     assert.equal(await f.receivers.presence(f.b.agent.id), 'available');
     assert.deepEqual((await f.receivers.inbox(f.b.principal, b, 0)).offers, []);
@@ -139,7 +139,7 @@ test('key revocation, rotation and agent disabling fence leases; unrelated key r
     assert.equal(await f.receivers.presence(f.a.agent.id), 'busy');
     const replacement = await f.agents.rotateKey(f.owner.id, f.a.agent.id, f.a.key.credential.id);
     assert.equal(await f.receivers.presence(f.a.agent.id), 'offline');
-    assert.deepEqual((await f.receivers.heartbeat(f.b.principal, { receiver: b, accepting_sessions: true })).sessions_to_stop, [id]);
+    assert.deepEqual((await f.receivers.heartbeat(f.b.principal, { receiver: b, accepting_sessions: true })).sessions_to_stop, []); // Unaccepted recipient has no conversation to stop.
     const p = await f.agents.authenticate(replacement.api_key);
     await f.acquire(p);
     await f.agents.disable(f.owner.id, f.a.agent.id);

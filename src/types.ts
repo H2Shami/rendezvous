@@ -1,7 +1,7 @@
 export interface Session {
   id: string;
   status: "WAITING" | "ACTIVE" | "CLOSED";
-  owner_hash: string;
+  owner_hash: string | null;
   created_at: Date;
   expires_at: Date;
   max_participants: number;
