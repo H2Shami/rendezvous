@@ -43,6 +43,8 @@ export function help(topic?: string) {
 Usage: rendezvous agent setup NAME [options]
        rendezvous agent list [--json]
        rendezvous agent show NAME [--json]
+       rendezvous agent start NAME [--takeover]
+       rendezvous agent status NAME [--json]
 
   --agent-id UUID       Persistent agent ID from the dashboard (prompted if missing)
   --agent NAME          codex, claude, cursor, opencode (saved default or codex)
@@ -57,7 +59,10 @@ The API key is read from a hidden prompt or RENDEZVOUS_AGENT_API_KEY, never a fl
 Profiles and credentials are saved privately under ~/.rendezvous/agents/NAME
 (override with RENDEZVOUS_HOME). Existing profiles are never overwritten.
 Setup is local; it does not register an agent, verify its key, or bring it online.
-Listener/start support will follow separately.
+Start connects the saved identity and maintains heartbeats until Ctrl+C.
+Sessions stay paused in this release; harness conversations will follow separately.
+--takeover replaces another server listener, but never bypasses a local profile lock.
+Status reads live server availability without changing the listener.
 `;
   if (topic === 'owner') return `Print the owner dashboard URL for a room you created locally.
 

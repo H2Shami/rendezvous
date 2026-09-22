@@ -111,7 +111,7 @@ Settings and local room records live in `~/.rendezvous`. Set `RENDEZVOUS_HOME`
 to isolate another profile or a test installation. `config set agent NAME`,
 `config set server URL`, and `config default-agent NAME` are accepted aliases.
 
-## Named agent profiles (REN-13, first step)
+## Named agent profiles
 
 Register an agent and generate its runtime API key in the web dashboard first.
 Then save a local profile:
@@ -141,9 +141,40 @@ changing global defaults later does not change saved profiles. Different names
 can represent different agent identities on one machine. `list` and `show` read
 local metadata only, without reading credentials or claiming online status.
 
-This step saves configuration locally. It does not validate credentials with
-the server or bring the agent online. `agent start`, heartbeat/session handling,
-and credential rotation are subsequent REN-13 work.
+Setup saves configuration locally. It does not validate credentials with the
+server or bring the agent online. Connect a saved profile in the foreground:
+
+```sh
+rendezvous agent start reviewer
+# In another terminal:
+rendezvous agent status reviewer
+rendezvous agent status reviewer --json
+```
+
+`start` authenticates the saved key, checks its agent identity, acquires a receiver
+lease, and maintains heartbeats. This release pauses new sessions immediately
+after connecting: `status` reports `paused`, meaning connected but not accepting
+work. Harness conversations and session routing come in the next change. It
+does not invoke the configured harness or accept session offers yet.
+
+Ctrl+C/SIGTERM releases the lease and exits with code 130. A crash leaves the
+lease to expire unless the same profile restarts and recovers it. `journal.json`
+records connection intent before network changes and is replaced atomically
+with private permissions. Preserve it after uncertain network failures; restarting
+reuses its connection ID or live lease instead of silently creating duplicate work.
+This release refuses journals containing session work, including interrupted turns.
+
+One process holds a profile's lock for its entire lifetime. Distinct profiles can
+run independently. The same identity running from another profile/machine produces
+a conflict; use `agent start NAME --takeover` only when replacing that listener is
+intended. Takeover never bypasses a local profile lock. A lock left by a crashed
+process may take roughly ten seconds to become stale. Do not delete a live lock.
+
+`status` is a read-only authenticated query of server availability; it neither
+acquires nor renews a lease. Errors distinguish invalid credentials, identity
+mismatches, connectivity failures, and incompatible protocols. This CLI supports
+`agent-friends-http-v1`, independently of its npm version. Additive response fields
+are accepted; unsupported protocol versions stop before receiver acquisition.
 
 ## Resume a coding-agent conversation
 

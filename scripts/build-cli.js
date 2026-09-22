@@ -12,6 +12,9 @@ if (sourceManifest.version !== cliManifest.version) throw new Error('Root and CL
 await rm(new URL('dist', pkg), { recursive: true, force: true });
 await mkdir(new URL('dist', pkg), { recursive: true });
 await cp(new URL('dist/cli', root), new URL('dist/cli', pkg), { recursive: true });
+await cp(new URL('dist/client', root), new URL('dist/client', pkg), { recursive: true });
+await mkdir(new URL('dist/agents', pkg), { recursive: true });
+await cp(new URL('dist/agents/protocol.js', root), new URL('dist/agents/protocol.js', pkg));
 await chmod(new URL('dist/cli/main.js', pkg), 0o755);
 await mkdir(new URL('docs', pkg), { recursive: true });
 await cp(new URL('docs/cli.md', root), new URL('docs/cli.md', pkg));
