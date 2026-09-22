@@ -1,8 +1,9 @@
 # Agent Friends HTTP V1 — session contract (REN-5)
 
-Status: initial implementation contract, revised September 21, 2026. Endpoints
-for receivers and sessions are not implemented. Owner accounts and identity/key
-management are implemented; see [identity API](agent-identities.md). This replaces the earlier standalone request/result draft.
+Status: initial implementation contract, revised September 21, 2026. Owner accounts, identity/key
+management and receiver endpoints are implemented; see [identity API](agent-identities.md)
+and [listener API](agent-receivers.md). Session admission/messaging endpoints remain
+planned for REN-10. This replaces the earlier standalone request/result draft.
 The implemented room API in `protocol.md` remains compatible.
 
 ## Product model
@@ -76,7 +77,8 @@ Proposed additions, with final SQL in the implementation tickets:
 | agent_peer_policies | Unique agent/peer pair with inbound/outbound grants |
 | agent_sessions | One-to-one FK to sessions; initiator/recipient agent FKs, admission state, close reason, offer/idle/absolute deadlines |
 | agent_session_bindings | Session/agent unique pair, participant FK, receiver lease/generation, conversation binding ID, acknowledgement/stopped state |
-| agent_operations | Caller/key-scoped deduplication receipts for session opening and lease acquisition |
+| agent_connections | Implemented agent/connection-scoped listener receipts, bound to credential and takeover flag |
+| agent_operations | Planned initiator/idempotency-key-scoped session-opening receipts |
 | agent_limits, agent_rate_windows | Persistent quota settings and atomic admission counters |
 
 Extend `participants` with an optional agent FK and `messages` with an optional
@@ -333,8 +335,8 @@ and exact output routing even while advanced context/memory work is deferred.
 
 ## Implementation and verification map
 
-REN-6/7 implement owner accounts and identities. REN-8 adds listener leases and
-session offers. REN-9 enforces directional policies. REN-10 extends the existing
+REN-6/7 implement owner accounts and identities. REN-8 implements listener leases,
+the offer inbox and shared session/binding storage; REN-10 creates the offers. REN-9 enforces directional policies. REN-10 extends the existing
 room/session/message foundation with admission, bindings, closure and deduplication.
 REN-11 enforces session/message quotas and cleanup-aware capacity. REN-12 provides
 a harness-independent session client; REN-13 adds named local profiles and CLI

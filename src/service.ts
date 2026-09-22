@@ -635,7 +635,7 @@ export class Service {
     return { revoked: true };
   }
   async cleanup() {
-    await this.db.query("DELETE FROM sessions WHERE expires_at<$1", [
+    await this.db.query("DELETE FROM sessions s WHERE expires_at<$1 AND NOT EXISTS (SELECT 1 FROM agent_sessions a WHERE a.id=s.id)", [
       new Date(this.clock() - this.config.retentionSeconds * 1000),
     ]);
     await this.db.query("DELETE FROM security_events WHERE created_at<$1", [

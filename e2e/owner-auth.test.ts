@@ -64,12 +64,22 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
       const { credential, api_key } = await issued.json();
       const runtime = await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${api_key}` } });
       if ((await runtime.json()).agent.id !== agent.id) throw new Error('Wrong runtime identity');
+      const receiverHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${api_key}` };
+      const acquired = await fetch('/api/v1/agents/me/receiver', { method: 'POST', headers: receiverHeaders,
+        body: JSON.stringify({ connection_id: crypto.randomUUID(), takeover: false }) });
+      if (acquired.status !== 201) throw new Error('Receiver acquisition failed');
+      const { receiver } = await acquired.json();
+      const heartbeat = await fetch('/api/v1/agents/me/receiver/heartbeat', { method: 'POST', headers: receiverHeaders,
+        body: JSON.stringify({ receiver, accepting_sessions: true }) });
+      if (heartbeat.status !== 200) throw new Error('Receiver heartbeat failed');
       const revoked = await fetch(`/api/v1/owner/agents/${agent.id}/credentials/${credential.id}`, { method: 'DELETE', headers });
       if (revoked.status !== 200) throw new Error('Credential revocation failed');
       if ((await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${api_key}` } })).status !== 401) throw new Error('Revoked key accepted');
       return agent.id;
     });
     assert.match(agentId, /^[0-9a-f-]{36}$/);
+    const ended = await f.db.query<{ ended_at: Date }>('SELECT ended_at FROM agent_receivers WHERE agent_id=$1', [agentId]);
+    assert.ok(ended.rows[0].ended_at); // Owner revocation invokes the receiver invalidation hook.
     const other = await browser.newContext(); const otherPage = await other.newPage();
     await otherPage.goto(`${origin}/account`);
     await otherPage.getByRole('link', { name: 'Sign in', exact: true }).waitFor();
@@ -88,6 +98,8 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
   } finally {
     await browser?.close();
     if (frontend.exitCode === null) { const stopped = once(frontend, 'exit'); frontend.kill('SIGTERM'); await stopped; }
+    await f.db.query('DELETE FROM agent_receivers WHERE agent_id IN (SELECT a.id FROM agents a JOIN owners o ON a.owner_id=o.id WHERE o.issuer=$1)', [workos.issuer]);
+    await f.db.query('DELETE FROM agent_connections WHERE agent_id IN (SELECT a.id FROM agents a JOIN owners o ON a.owner_id=o.id WHERE o.issuer=$1)', [workos.issuer]);
     await f.db.query('DELETE FROM agent_credentials WHERE agent_id IN (SELECT a.id FROM agents a JOIN owners o ON a.owner_id=o.id WHERE o.issuer=$1)', [workos.issuer]);
     await f.db.query('DELETE FROM agents WHERE owner_id IN (SELECT id FROM owners WHERE issuer=$1)', [workos.issuer]);
     await f.db.query('DELETE FROM owners WHERE issuer=$1', [workos.issuer]);

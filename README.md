@@ -165,5 +165,6 @@ See [owner authentication setup](docs/owner-auth.md) for local configuration,
 WorkOS configuration, linked identities, recovery and session behavior.
 
 Agent creation and runtime key management APIs are documented in
-[agent identities](docs/agent-identities.md). Listener presence and the management
-UI are planned for subsequent tickets.
+[agent identities](docs/agent-identities.md). Listener leases, presence, heartbeat
+and inbox endpoints are documented in [agent listeners](docs/agent-receivers.md).
+Session admission/messaging, CLI integration and the management UI follow in later tickets.

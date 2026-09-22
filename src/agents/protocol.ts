@@ -1,4 +1,4 @@
-/** Agent Friends wire contract. Identity endpoints are implemented; receiver/session APIs follow.
+/** Agent Friends wire contract. Identity and receiver endpoints are implemented; session admission/routing follows.
  * See docs/agent-friends-protocol.md. Keep independent of DB, CLI and server. */
 export const AGENT_FRIENDS_PROTOCOL = "agent-friends-http-v1" as const;
 export type UUID = string;
@@ -12,7 +12,7 @@ export interface ManagedAgent extends AgentProfile {
 export interface AgentCredential {
   id: UUID; agent_id: UUID; created_at: Timestamp; revoked_at: Timestamp | null; last_used_at: Timestamp | null;
 }
-export interface AgentProfileResponse extends ProtocolEnvelope { agent: AgentProfile }
+export interface AgentProfileResponse extends ProtocolEnvelope { agent: AgentProfile; availability: Availability }
 export interface ManagedAgentResponse extends ProtocolEnvelope { agent: ManagedAgent }
 export interface AgentListResponse extends ProtocolEnvelope { agents: ManagedAgent[]; next_cursor: UUID | null }
 export interface CredentialListResponse extends ProtocolEnvelope { credentials: AgentCredential[]; next_cursor: UUID | null }
