@@ -68,16 +68,15 @@ status. Missing, disabled and ungranted peers all return the same ACCESS_DENIED
 before any presence information is consulted. Management mutations take the same
 locks, so revocation and admission/acceptance serialize.
 
-Session open and accept endpoints are still REN-10. Call this guard inside their
-transaction **before taking individual agent or session locks**, and retain those
-locks through creation/activation. Derive the initiator from the authenticated
+The [session API](agent-sessions.md) acquires both agent locks in stable order
+before any session lock, and checks this guard inside the same open/accept
+transaction. It retains the locks through creation/activation. Derive the initiator from the authenticated
 principal for open and the stored session for accept, never from an untrusted
 sender field. Acceptance must first establish caller membership, then recheck the
 stored direction's policy. Also validate current credentials, both receiver
 assignments, session state/deadlines, bindings and limits in that transaction.
 This policy guard alone is not a complete admission or authentication check.
 
-Tests use seeded sessions and representative open/accept transactions to exercise
-this boundary on PGlite and native PostgreSQL. REN-10 must additionally verify
-its real HTTP endpoints. No public peer lookup, session admission or UI is added
-by this ticket; owner settings UI follows in REN-14.
+Policy tests use seeded sessions and representative transactions; REN-10 adds
+real HTTP admission/acceptance race tests on PGlite and native PostgreSQL. Public
+peer lookup remains deferred; owner settings UI follows in REN-14.

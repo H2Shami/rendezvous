@@ -34,7 +34,7 @@ For example, using shortened lease IDs:
 3. The CLI crashes and the lease expires. S1 closes because its listener was lost.
 4. A replacement CLI acquires lease `bbb`, generation `2`, for the same agent A.
 5. A delayed request using `aaa` cannot act as the current listener. S1 remains
-   closed; the replacement can handle new sessions once admission is implemented.
+   closed; the replacement can handle new sessions using the session API.
 
 `agent_receivers` answers **"Who handles agent A right now?"** Its current row now
 contains `bbb`. `agent_session_bindings` answers **"Which listener was assigned to
@@ -47,7 +47,7 @@ that side to existing message membership; `binding_id` lets the client map it to
 its local harness conversation. The server does not store the harness context.
 `stopped_at` records release of that side's reservation through acknowledgement
 or lease invalidation. Agent names do not imply required roles: either participant
-can send and receive after acceptance. Session admission and messaging are REN-10.
+can send and receive after acceptance. See the [session API](agent-sessions.md) for admission and messaging.
 
 ## HTTP API
 
@@ -87,8 +87,8 @@ after replacement, release of the old reference is stale.
 `paused` when not accepting sessions, `busy` when its reserved capacity is full,
 or `available`. This is authenticated self-presence, not a public directory.
 The initial concurrency limit is one; owner-configurable limits and admission
-rate counters are REN-11. Advertised session/message defaults are not yet enforced
-by routing APIs, because those APIs arrive in REN-10.
+rate counters are REN-11. Session capacity, byte limits, deadlines and message budgets are enforced by
+the session API; configurable quotas and session/message rate counters remain REN-11.
 
 Inbox snapshots contain at most ten pending, unexpired offers assigned to the
 recipient's exact lease/generation. Reads are nondestructive: clients must handle
@@ -128,16 +128,11 @@ still deploys as one relay; existing room notifications remain process-local.
 
 ## Next integration
 
-REN-8 supplies storage, offer reads and loss handling. There is no public session
-creation, accept, message, close or stopped-acknowledgement API yet: REN-10 adds
-those operations and deadline/retention cleanup. Tests seed offers directly to
-exercise the listener foundation. Legacy room cleanup excludes agent-session
-sidecars so it cannot erase their lifecycle records using room-only retention.
+REN-10 now supplies [session admission, acceptance, messaging, closure and retention](agent-sessions.md).
+It creates offers in these shared tables and invokes policy and receiver checks
+inside transactions holding both agent locks. Legacy room cleanup excludes agent
+sessions so their own retention policy controls deletion.
 
-Admission must lock both agents in stable ID order before reserving capacity and
-binding the recipient lease. Accept/send must call `requireCurrent` within their
-locked transaction and also check session membership, state, binding and deadlines.
-Notify readers only after commit; the bounded DB fallback remains required.
 The SDK and CLI will consume these HTTP endpoints in REN-12/13; no agent-start
 CLI command is introduced here.
 

@@ -7,6 +7,8 @@ import { discovery, endpoints, htmlInstructions } from "./instructions.js";
 import type { Service } from "./service.js";
 import { requestLogging, safeOrigin } from "./logging.js";
 
+import { AgentSessionService } from "./agents/sessions.js";
+import { agentSessionRoutes } from "./agents/session-routes.js";
 import { AgentPolicyService } from "./agents/policies.js";
 import { ReceiverService } from "./agents/receivers.js";
 import { AgentIdentityService } from "./agents/identity.js";
@@ -40,12 +42,13 @@ export function createApplication(
     receivers.notify();
     for (const id of sessions) service.notify(id);
   });
+  const agentSessions = new AgentSessionService(service.db, receivers, policies, service.clock, (event, fields) => service.log(event, fields), service.engine);
   const token = (req: express.Request) =>
     req.headers.authorization?.startsWith("Bearer ")
       ? req.headers.authorization.slice(7)
       : "";
   app.use((req, res, next) => {
-    res.locals.agentProtocol = /^\/api\/v1\/(?:owner\/agents|agents)(?:\/|$)/.test(req.path);
+    res.locals.agentProtocol = /^\/api\/v1\/(?:owner\/agents|agents|agent-sessions)(?:\/|$)/.test(req.path);
     next();
   });
   app.use(requestLogging((event, fields) => service.log(event, fields)));
@@ -122,8 +125,9 @@ export function createApplication(
     try { service.limit(`owner-login:${req.ip}`, 30, 3600000); next(); }
     catch (error) { next(error); }
   });
-  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents, policies));
+  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents, policies, agentSessions));
   app.use("/api/v1/agents", runtimeIdentityRoutes(agents, receivers));
+  app.use("/api/v1/agent-sessions", agentSessionRoutes(agents, agentSessions));
   app.get("/health", async (_req, res) => {
     await service.db.query("SELECT 1");
     res.json({ status: "ok" });
@@ -304,17 +308,19 @@ export function createApplication(
     60000,
   );
   cleanup.unref();
-  let receiverSweep: Promise<void> | undefined;
-  const sweepReceivers = () => receiverSweep ??= receivers.cleanup().catch(() => service.log('receiver.cleanup.failed')).finally(() => { receiverSweep = undefined; });
-  const receiverCleanup = setInterval(() => { void sweepReceivers(); }, 1000);
-  receiverCleanup.unref();
+  let agentSweep: Promise<void> | undefined;
+  const sweepAgents = () => agentSweep ??= receivers.cleanup().then(() => agentSessions.cleanup()).catch(() => service.log('agent.cleanup.failed')).finally(() => { agentSweep = undefined; });
+  const agentCleanup = setInterval(() => { void sweepAgents(); }, 1000);
+  agentCleanup.unref();
   return {
     app,
     server,
     receivers,
     policies,
+    agentSessions,
     listen: async (port = 3000, host = "127.0.0.1") => {
       await receivers.cleanup();
+      await agentSessions.cleanup();
       return new Promise<import("node:net").AddressInfo>((resolve, reject) => {
         server.once("error", reject);
         server.listen(port, host, () => {
@@ -327,9 +333,10 @@ export function createApplication(
     },
     close: async () => {
       clearInterval(cleanup);
-      clearInterval(receiverCleanup);
+      clearInterval(agentCleanup);
       receivers.shutdown();
-      await receiverSweep;
+      agentSessions.shutdown();
+      await agentSweep;
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),

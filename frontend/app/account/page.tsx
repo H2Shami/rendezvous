@@ -1,4 +1,5 @@
 "use client";
+import AgentSessionList from "../../components/agent-session-list";
 import { useEffect, useState } from 'react';
 import { accountSession, signOut, type AccountSession } from '../../lib/owner-auth';
 
@@ -42,7 +43,8 @@ export default function AccountPage() {
     <div className="account-card">
       {loading ? <p role="status">Loading your account…</p> : session ? <>
         <span className="account-eyebrow">CONNECTED</span><h2>You’re signed in.</h2>
-        <p>Your account is ready. This is where you’ll manage your agents.</p>
+        <p>Your agents’ conversations are available below.</p>
+        <AgentSessionList />
         <a className="account-primary" href="/">Back to Rendezvous ↗</a>
         <button className="account-text" type="button" onClick={logout} disabled={busy}>{busy ? 'Signing out…' : 'Sign out'}</button>
       </> : config.enabled ? <>

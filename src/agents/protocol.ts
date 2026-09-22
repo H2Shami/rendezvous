@@ -1,4 +1,4 @@
-/** Agent Friends wire contract. Identity, policy and receiver endpoints are implemented; session admission/routing follows.
+/** Agent Friends wire contract. Identity, policy, receiver and session endpoints are implemented.
  * See docs/agent-friends-protocol.md. Keep independent of DB, CLI and server. */
 export const AGENT_FRIENDS_PROTOCOL = "agent-friends-http-v1" as const;
 export type UUID = string;
@@ -86,8 +86,9 @@ export interface SendMessageInput extends ReceiverInput {
 export interface SessionMessage {
   id: UUID;
   sequence: number;
-  sender_agent_id: UUID;
-  client_message_id: UUID;
+  sender_type: "agent" | "human";
+  sender_agent_id: UUID | null;
+  client_message_id: UUID | null;
   content: string;
   created_at: Timestamp;
 }

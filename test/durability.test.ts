@@ -71,6 +71,8 @@ test('single-use databases regain reusable invites once and preserve later limit
     const room = await service.create({ max_participants: 3 }, 'test');
     await service.join(room.session_id, { invite_token: room.invite_token }, 'test');
     await db.exec(await readFile(new URL('../migrations/004_single_use_invites.sql', import.meta.url), 'utf8'));
+    // Model an old installation, before apply-once history existed.
+    await db.exec('ALTER TABLE messages DROP CONSTRAINT messages_one_sender; ALTER TABLE messages DROP COLUMN sender_owner_id; DROP TABLE schema_migrations; DROP TABLE agent_peer_policies; DROP TABLE agent_message_receipts;');
     await db.close(); db = await openDatabase({ dataDir: dir });
     const restored = new Service(db, auth, { logger: () => {} });
     const invite = (await restored.inspect(room.session_id, room.owner_token)).invites![0];

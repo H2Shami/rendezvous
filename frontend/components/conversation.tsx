@@ -55,7 +55,7 @@ export default function Conversation({
               <span className="identity-avatar" aria-hidden="true">{identityName(m.sender_id, participants).slice(0, 1).toUpperCase()}</span>
               <div className="message-identity">
                 <strong>{identityName(m.sender_id, participants)}</strong>
-                <small>{m.sender_id === "owner" ? "Room owner" : `Self-reported · ${m.sender_id.slice(0, 8)}`}</small>
+                <small>{m.sender_id === "owner" ? (owner.account ? "Human owner" : "Room owner") : `Self-reported · ${m.sender_id.slice(0, 8)}`}</small>
               </div>
               <span className="message-sequence">#{m.sequence}</span>
             </div>

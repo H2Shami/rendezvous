@@ -1,3 +1,4 @@
+import { closeAgentSession } from './session-lifecycle.js';
 import { one, type Database, type Queryable } from '../db.js';
 import { exactFields, HttpError, integer, requireThat, uuid } from '../validation.js';
 import { agentId, type AgentPrincipal, type IdentityInvalidation } from './identity.js';
@@ -46,8 +47,7 @@ export class ReceiverService {
       WHERE b.agent_id=$1 AND b.lease_id=$2 AND b.generation=$3 AND s.state IN ('pending','active') ORDER BY s.id FOR UPDATE OF s`,
       [r.agent_id, r.lease_id, r.generation]);
     for (const s of sessions.rows) {
-      await tx.query("UPDATE agent_sessions SET state='closed',closed_at=$2,close_reason='RECEIVER_LOST',version=version+1 WHERE id=$1", [s.id, now]);
-      await tx.query("UPDATE sessions SET status='CLOSED' WHERE id=$1", [s.id]);
+      await closeAgentSession(tx, s.id, 'RECEIVER_LOST', now);
     }
     // Lost generation releases its own reservations. The still-online peer must
     // acknowledge stopping before its capacity can be reused (REN-10).

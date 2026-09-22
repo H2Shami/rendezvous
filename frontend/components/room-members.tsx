@@ -4,6 +4,7 @@ import type { Room } from "../lib/api";
 interface RoomMembersProps {
   room: Room | null;
   disabled: boolean;
+  readOnly?: boolean;
   onRevokeParticipant: (id: string) => void;
   onRevokeInvite: (id: string) => void;
   onCreateInvite: () => void;
@@ -12,6 +13,7 @@ interface RoomMembersProps {
 export default function RoomMembers({
   room,
   disabled,
+  readOnly = false,
   onRevokeParticipant,
   onRevokeInvite,
   onCreateInvite,
@@ -33,7 +35,7 @@ export default function RoomMembers({
               {p.id.slice(0, 8)} · self-reported
               {p.revoked_at ? " · revoked" : p.left_at ? " · left" : ""}
             </small>
-            {!p.revoked_at && !p.left_at && (
+            {!readOnly && !p.revoked_at && !p.left_at && (
               <button
                 disabled={disabled}
                 onClick={() => onRevokeParticipant(p.id)}
@@ -44,6 +46,7 @@ export default function RoomMembers({
           </div>
         ))}
       </div>
+      {!readOnly && <>
       <h2>Invitations</h2>
       <div id="invites">
         {room?.invites?.map((i) => (
@@ -69,6 +72,7 @@ export default function RoomMembers({
         Create invite
       </button>
       <p className="muted">Each invite can be shared up to its use limit.</p>
+      </>}
     </section>
   );
 }
