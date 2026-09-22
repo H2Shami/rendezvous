@@ -225,6 +225,8 @@ const task = new aws.ecs.TaskDefinition('task', {
     }), tags,
 });
 const service = new aws.ecs.Service('service', {
+  // One relay: room wakeups are process-local. Receiver fencing is in PostgreSQL;
+  // receiver inboxes also recheck the DB at most every second across notification scopes.
   cluster: cluster.arn, taskDefinition: task.arn, desiredCount: 1, launchType: 'FARGATE', platformVersion: '1.4.0',
   // Stop the old relay before starting another: notifications are process-local.
   deploymentMinimumHealthyPercent: 0, deploymentMaximumPercent: 100,

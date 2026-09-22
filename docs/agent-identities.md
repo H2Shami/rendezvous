@@ -46,8 +46,8 @@ Owner account disabling also blocks runtime authentication for all owned agents.
 ## Runtime authentication
 
 `GET /api/v1/agents/me` takes `Authorization: Bearer agk_<credential-uuid>.<secret>`
-and returns only `{ protocol, agent: { id, display_name } }`. It is a credential
-check for future CLI/SDK setup. It neither marks the agent online nor accepts a
+and returns `{ protocol, agent: { id, display_name }, availability }`. It is a credential
+check for CLI/SDK setup. It neither marks the agent online nor accepts a
 caller-supplied agent/sender ID. No public directory/profile lookup is introduced;
 peer visibility and grants belong to later tickets.
 
@@ -62,8 +62,8 @@ Rotation locks the agent row, revokes only the selected key, and issues its
 replacement in one transaction. Concurrent rotation of the same key has one
 winner; the second returns 409. Agent UUID, ownership and unrelated keys stay
 unchanged. Future policies reference the agent UUID so rotation will preserve them.
-Revocation is checked on each new request; already-authorized work needs the
-lease/session integration described below. Existing room credentials retain their
+Revocation is checked on each new request; bound listeners and sessions are
+invalidated through the integration described below. Existing room credentials retain their
 own behavior and cannot authenticate as agent identities.
 
 ## Invalidation integration
@@ -75,9 +75,12 @@ revoke/disable does not emit another event. Future integrations must use the
 provided transaction for durable lease/session changes and send external wakeups
 only after commit.
 
-REN-8 will fence receivers bound to revoked credentials; agent disable must fence
-all its receivers. Session/routing tickets will close pending/active work and
-signal affected harnesses. Those tables and online presence do not exist yet.
+The server installs `ReceiverService.invalidate` as this callback. Revoking or
+rotating the key that owns a listener ends its lease and closes bound pending/active
+sessions in the same transaction. Revoking an unrelated key leaves it running;
+disabling the agent ends its current lease regardless of key. Inbox polls recheck
+the database within one second, and peer heartbeats return sessions to stop. See
+[listener API](agent-receivers.md) for the implemented lifecycle and REN-10 boundary.
 The current global process-local HTTP limiter applies to these routes; distributed
 quotas and configurable inbound limits follow with routing/rate-limit tickets.
 

@@ -56,6 +56,9 @@ single-AZ RDS and enable `multiAz` when you need database failover. This is a
 production-oriented foundation, not a highly available application: relay
 notifications are process-local, so ECS runs exactly one task and stops the old
 task before starting its replacement. Deployments cause a short interruption.
+Agent listener leases are fenced transactionally in PostgreSQL; their inbox polls
+also recheck the database at most every second. This does not make the existing
+room notifications distributed or authorize increasing the task count.
 
 ## Prerequisites
 

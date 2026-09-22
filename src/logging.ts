@@ -21,7 +21,7 @@ export function safePath(url: string) {
     ":id",
   );
   if (/^\/api\/v1\/owner\/agents(?:\/:id(?:\/(?:disable|credentials)(?:\/:id(?:\/rotate)?)?)?)?$/.test(normalized)) return normalized;
-  if (path === '/api/v1/agents/me') return path;
+  if (/^\/api\/v1\/agents\/me(?:\/receiver(?:\/(?:heartbeat|release|inbox))?)?$/.test(path)) return path;
   return /^(\/|\/health|\/style\.css|\/protocol\/v1|\/\.well-known\/agent-rendezvous|\/join\/:id|\/api\/v1\/sessions(?:\/:id(?:\/(?:join|messages|leave|close|invites|participants)(?:\/:id)?)?)?)$/.test(
     normalized,
   )

@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { exactFields } from '../validation.js';
+import { receiverReference, type ReceiverService } from './receivers.js';
+import { exactFields, requireThat } from '../validation.js';
 import { AGENT_FRIENDS_PROTOCOL as protocol } from './protocol.js';
 import { type AgentIdentityService, identityPage } from './identity.js';
 
@@ -29,13 +30,36 @@ export function ownerAgentRoutes(service: AgentIdentityService) {
   });
   return router;
 }
-export function runtimeIdentityRoutes(service: AgentIdentityService) {
+export function runtimeIdentityRoutes(service: AgentIdentityService, receivers: ReceiverService) {
   const router = Router();
+  router.use('/me/receiver', async (req, res, next) => {
+    const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+    res.locals.agentPrincipal = await service.authenticate(token);
+    next();
+  });
+  router.post('/me/receiver', async (req, res) => {
+    const result = await receivers.acquire(res.locals.agentPrincipal, req.body);
+    res.status(result.replay ? 200 : 201).json(result.body);
+  });
+  router.post('/me/receiver/heartbeat', async (req, res) => res.json(await receivers.heartbeat(res.locals.agentPrincipal, req.body)));
+  router.post('/me/receiver/release', async (req, res) => res.json(await receivers.release(res.locals.agentPrincipal, req.body)));
+  router.get('/me/receiver/inbox', async (req, res, next) => {
+    exactFields(req.query, ['lease_id', 'generation', 'wait']);
+    const reference = receiverReference({ lease_id: req.query.lease_id, generation: req.query.generation });
+    requireThat(req.query.wait === undefined || (typeof req.query.wait === 'string' && /^(?:[0-9]|1[0-9]|20)$/.test(req.query.wait)), 'INVALID_REQUEST', 'wait must be 0–20 seconds.');
+    const controller = new AbortController(), disconnect = () => controller.abort();
+    res.once('close', disconnect);
+    try {
+      const result = await receivers.inbox(res.locals.agentPrincipal, reference, Number(req.query.wait ?? 20), controller.signal);
+      if (!controller.signal.aborted) res.json(result);
+    } catch (error) { if (!controller.signal.aborted) next(error); }
+    finally { res.off('close', disconnect); }
+  });
   router.get('/me', async (req, res) => {
     exactFields(req.query, []);
     const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
     const principal = await service.authenticate(token);
-    res.json({ protocol, agent: { id: principal.agent_id, display_name: principal.display_name } });
+    res.json({ protocol, agent: { id: principal.agent_id, display_name: principal.display_name }, availability: await receivers.presence(principal.agent_id) });
   });
   return router;
 }

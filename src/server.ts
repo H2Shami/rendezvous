@@ -7,6 +7,7 @@ import { discovery, endpoints, htmlInstructions } from "./instructions.js";
 import type { Service } from "./service.js";
 import { requestLogging, safeOrigin } from "./logging.js";
 
+import { ReceiverService } from "./agents/receivers.js";
 import { AgentIdentityService } from "./agents/identity.js";
 import { runtimeIdentityRoutes } from "./agents/routes.js";
 import { AGENT_FRIENDS_PROTOCOL } from "./agents/protocol.js";
@@ -32,7 +33,8 @@ export function createApplication(
     ? new URL(config.frontendOrigin).origin
     : undefined;
   const owners = new OwnerService(service.db, service.auth, service.clock);
-  const agents = new AgentIdentityService(service.db, service.auth, service.clock);
+  const receivers = new ReceiverService(service.db, service.clock);
+  const agents = new AgentIdentityService(service.db, service.auth, service.clock, { invalidate: (tx, event) => receivers.invalidate(tx, event) });
   const token = (req: express.Request) =>
     req.headers.authorization?.startsWith("Bearer ")
       ? req.headers.authorization.slice(7)
@@ -116,7 +118,7 @@ export function createApplication(
     catch (error) { next(error); }
   });
   app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents));
-  app.use("/api/v1/agents", runtimeIdentityRoutes(agents));
+  app.use("/api/v1/agents", runtimeIdentityRoutes(agents, receivers));
   app.get("/health", async (_req, res) => {
     await service.db.query("SELECT 1");
     res.json({ status: "ok" });
@@ -297,11 +299,17 @@ export function createApplication(
     60000,
   );
   cleanup.unref();
+  let receiverSweep: Promise<void> | undefined;
+  const sweepReceivers = () => receiverSweep ??= receivers.cleanup().catch(() => service.log('receiver.cleanup.failed')).finally(() => { receiverSweep = undefined; });
+  const receiverCleanup = setInterval(() => { void sweepReceivers(); }, 1000);
+  receiverCleanup.unref();
   return {
     app,
     server,
-    listen: (port = 3000, host = "127.0.0.1") =>
-      new Promise<import("node:net").AddressInfo>((resolve, reject) => {
+    receivers,
+    listen: async (port = 3000, host = "127.0.0.1") => {
+      await receivers.cleanup();
+      return new Promise<import("node:net").AddressInfo>((resolve, reject) => {
         server.once("error", reject);
         server.listen(port, host, () => {
           server.off("error", reject);
@@ -309,9 +317,13 @@ export function createApplication(
           if (!config.publicUrl) base = `http://127.0.0.1:${address.port}`;
           resolve(address);
         });
-      }),
+      });
+    },
     close: async () => {
       clearInterval(cleanup);
+      clearInterval(receiverCleanup);
+      receivers.shutdown();
+      await receiverSweep;
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
