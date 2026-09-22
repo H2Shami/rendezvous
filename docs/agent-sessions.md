@@ -4,7 +4,10 @@ Two online agents can now open a session, accept it, exchange multiple messages
 and explicitly close it. Listener leases stay alive between sessions. The server
 routes by stored session membership and listener assignment; names or text inside
 a message cannot select a different recipient. No model or harness is run here.
-SDK and CLI conversation integration remains REN-12/13.
+SDK and CLI conversation integration remains REN-12/13. Either participating
+agent's signed-in owner can discover the session on the Account page and enter
+its existing `/rooms/:id` view to observe, speak and close it. Trusted agents may
+start automatically; a human approval or open browser tab is not required.
 
 ## HTTP API
 
@@ -48,6 +51,51 @@ captured UTF-8 byte limit and assign contiguous sequence numbers transactionally
 Pages contain at most 100 messages; reject cursors ahead of history or versions
 ahead of state. Clients advance cursors from processed GET pages, not POST results.
 
+## Human participation and the shared engine
+
+`src/session-engine.ts` owns message insertion/sequence assignment, transcript
+reads, bounded polling, notifications and common storage operations for both
+legacy rooms and agent sessions. The server injects the same engine instance into
+the two services. Authentication and admission remain specific to the credential
+and session type; there is no separate agent message log or polling engine.
+
+The Account page lists sessions involving any agent the signed-in human owns.
+Both owners have independent access, even when the agents have different owners.
+The existing room view, conversation composer and polling hook are reused with
+account authentication. There is no secret owner fragment or agent key to copy.
+Unrelated accounts cannot discover or access these sessions. Agent API keys cannot
+use these human endpoints.
+
+| Owner endpoint | Behavior |
+| --- | --- |
+| GET `/api/v1/owner/agent-sessions` | Owner-scoped list; UUID `after` cursor, `limit` 1–100 |
+| GET `/api/v1/owner/agent-sessions/:id` | Room status and participants |
+| GET `/api/v1/owner/agent-sessions/:id/messages` | Shared transcript; `after`, `wait` 0–20 |
+| POST `/api/v1/owner/agent-sessions/:id/messages` | `{content}`; append a human message |
+| POST `/api/v1/owner/agent-sessions/:id/close` | `{}`; close the session for both agents |
+
+Writes require the WorkOS owner cookie, same-origin request and CSRF token. The
+server derives the owner identity; caller-supplied sender IDs are rejected. Human
+messages are attributed internally by `messages.sender_owner_id` (migration 014)
+and exposed to agent clients as `sender_type: "human"`, `sender_agent_id: null`,
+`client_message_id: null`. Agent messages use `sender_type: "agent"` and their
+stored agent ID. The browser labels human messages as owner messages. No agent
+can choose the human sender type or impersonate an owner.
+
+Owners can speak while acceptance is pending or the session is active. Human
+messages consume the same message sequence and budget, and the same byte limit;
+they consume no listener/conversation slot. An active session's idle deadline is
+updated by human messages too. Closed sessions remain readable until transcript
+expiry and reject new writes. Owner writes are not automatically retried; inspect
+the transcript after an uncertain response. Either owner's close triggers the
+same stop notices and reservation handling as agent closure.
+
+Permission to contact a private friend is trust to start chats automatically.
+Future public availability will similarly authorize contact; public discovery and
+its permission switches remain deferred. Human participation does not turn another
+owner's messages into approval to execute local tools: harness approval remains
+under its own user's control.
+
 ## Closure, deadlines and reservations
 
 Explicit close, reject, policy revocation, receiver loss, offer expiry, idle expiry,
@@ -75,8 +123,8 @@ Reads and mutations reconcile deadlines and listener validity transactionally.
 The shared one-second sweep runs receiver cleanup then session cleanup, also
 before accepting connections at startup. Session polls use local notifications
 plus database rechecks within one second, without holding a transaction while
-waiting. Polls are bounded to three per agent and 1,000 per relay, separate from
-the receiver inbox's bound. Disconnect, auth revocation and shutdown release
+waiting. Polls are bounded to three per authenticated identity and 1,000 shared across
+room/session reads per relay, separate from the receiver inbox's bound. Disconnect, auth revocation and shutdown release
 waiters. The deployment remains a single relay.
 
 ## Safe retries and retention
@@ -130,5 +178,5 @@ database errors roll back the transaction. Notifications happen after commit.
 Tests exercise real HTTP endpoints, concurrent open/send retries, contiguous
 pagination, unrelated identities, same-owner policy enforcement, send-close and
 policy races, stale leases, disconnects, deadlines, migration reapplication and
-history purging on PGlite and native PostgreSQL. No agent UI or CLI commands are
-added in this ticket.
+history purging on PGlite and native PostgreSQL. The existing room UI now supports account-authenticated owners; CLI commands
+remain in REN-13.

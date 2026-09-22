@@ -1,3 +1,6 @@
+import type { AgentSessionService } from '../agents/sessions.js';
+import { identityPage } from '../agents/identity.js';
+import { exactFields } from '../validation.js';
 import { Router, type Request, type Response } from 'express';
 import type { OwnerService } from './service.js';
 import { LOGIN_MS } from './service.js';
@@ -7,7 +10,7 @@ import type { AgentIdentityService } from '../agents/identity.js';
 import { ownerAgentRoutes } from '../agents/routes.js';
 import { HttpError, requireThat } from '../validation.js';
 
-export function ownerRoutes(service: OwnerService, provider: IdentityProvider | undefined, origin: string, agents?: AgentIdentityService, policies?: AgentPolicyService) {
+export function ownerRoutes(service: OwnerService, provider: IdentityProvider | undefined, origin: string, agents?: AgentIdentityService, policies?: AgentPolicyService, sessions?: AgentSessionService) {
   const router = Router();
   const secure = new URL(origin).protocol === 'https:';
   const sessionName = secure ? '__Host-rv-owner' : 'rv-owner';
@@ -85,6 +88,27 @@ export function ownerRoutes(service: OwnerService, provider: IdentityProvider | 
     res.locals.ownerId = owner.id;
     next();
   }, ownerAgentRoutes(agents, policies));
+  if (sessions) {
+    router.use('/agent-sessions', async (req, res, next) => {
+      const { identity, owner } = await authenticated(req, res);
+      if (!['GET', 'HEAD'].includes(req.method)) { sameOrigin(req); service.checkCsrf(identity.sessionId, req.get('X-CSRF-Token') || ''); }
+      res.locals.ownerId = owner.id; next();
+    });
+    router.get('/agent-sessions', async (req, res) => { const page = identityPage(req.query); res.json(await sessions.ownerList(res.locals.ownerId, page.after, page.limit)); });
+    router.get('/agent-sessions/:id', async (req, res) => { exactFields(req.query, []); res.json(await sessions.ownerRoom(res.locals.ownerId, req.params.id)); });
+    router.post('/agent-sessions/:id/messages', async (req, res) => { exactFields(req.query, []); res.status(201).json(await sessions.ownerSend(res.locals.ownerId, req.params.id, req.body)); });
+    router.post('/agent-sessions/:id/close', async (req, res) => { exactFields(req.query, []); exactFields(req.body ?? {}, []); res.json(await sessions.ownerClose(res.locals.ownerId, req.params.id)); });
+    router.get('/agent-sessions/:id/messages', async (req, res, next) => {
+      exactFields(req.query, ['after', 'wait']);
+      const after = req.query.after ?? '0', wait = req.query.wait ?? '20';
+      requireThat(typeof after === 'string' && /^(0|[1-9][0-9]*)$/.test(after) && Number(after) <= 2147483647, 'INVALID_REQUEST', 'Invalid cursor.');
+      requireThat(typeof wait === 'string' && /^(?:[0-9]|1[0-9]|20)$/.test(wait), 'INVALID_REQUEST', 'wait must be 0–20 seconds.');
+      const controller = new AbortController(), disconnect = () => controller.abort(); res.once('close', disconnect);
+      try { const page = await sessions.ownerMessages(res.locals.ownerId, req.params.id, Number(after), Number(wait), controller.signal); if (!controller.signal.aborted) res.json(page); }
+      catch (error) { if (!controller.signal.aborted) next(error); }
+      finally { res.off('close', disconnect); }
+    });
+  }
   // Foundation for future management routes: always authenticate before serving data,
   // constrain SQL by owner.id, and require same-origin + CSRF for every write.
   return router;

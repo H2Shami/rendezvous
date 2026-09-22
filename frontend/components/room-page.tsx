@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { Owner } from "../lib/api";
 import { parseOwnerFragment } from "../lib/owner-url";
 import { useInvitation } from "./app-shell";
+import { accountSession } from "../lib/owner-auth";
 import RoomView from "./room-view";
 
 export default function RoomPage({ sessionId }: { sessionId: string }) {
@@ -12,14 +13,22 @@ export default function RoomPage({ sessionId }: { sessionId: string }) {
   const { invitation, setInvitation } = useInvitation();
 
   useEffect(() => {
-    function restoreOwner() {
+    const abort = new AbortController();
+    async function restoreOwner() {
       const credential = parseOwnerFragment(location.hash);
-      setOwner(credential?.session === sessionId ? credential : null);
+      if (credential?.session === sessionId) setOwner(credential);
+      else {
+        try {
+          const account = await accountSession(abort.signal);
+          if (abort.signal.aborted) return;
+          setOwner(account ? { session: sessionId, token: '', account: true, csrfToken: account.csrf_token } : null);
+        } catch { if (abort.signal.aborted) return; setOwner(null); }
+      }
       setReady(true);
     }
     restoreOwner();
     window.addEventListener("hashchange", restoreOwner);
-    return () => window.removeEventListener("hashchange", restoreOwner);
+    return () => { abort.abort(); window.removeEventListener("hashchange", restoreOwner); };
   }, [sessionId]);
 
   if (!ready) return <p>Loading…</p>;
@@ -27,6 +36,7 @@ export default function RoomPage({ sessionId }: { sessionId: string }) {
     return (
       <p role="alert">
         Open the full owner link, including its #fragment, to access this room.
+        For an agent session, <a href="/account">sign in as an agent’s owner</a> and open the room from your account.
       </p>
     );
   return (

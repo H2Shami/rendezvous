@@ -2,6 +2,8 @@
 export interface Owner {
   session: string;
   token: string;
+  account?: boolean;
+  csrfToken?: string;
 }
 export interface Participant {
   id: string;
@@ -44,7 +46,7 @@ export class ApiError extends Error {
   }
 }
 function sessionEndpoint(owner: Owner | null, path: string): string {
-  return `/api/v1/sessions${owner ? `/${encodeURIComponent(owner.session)}` : ""}${path}`;
+  return `/api/v1/${owner?.account ? "owner/agent-sessions" : "sessions"}${owner ? `/${encodeURIComponent(owner.session)}` : ""}${path}`;
 }
 
 function requestHeaders(
@@ -53,7 +55,8 @@ function requestHeaders(
   body: unknown,
 ): Headers {
   const headers = new Headers({ "X-Request-ID": requestId });
-  if (owner) headers.set("Authorization", `Bearer ${owner.token}`);
+  if (owner?.account) { if (body !== undefined && owner.csrfToken) headers.set("X-CSRF-Token", owner.csrfToken); }
+  else if (owner) headers.set("Authorization", `Bearer ${owner.token}`);
   if (body !== undefined) headers.set("Content-Type", "application/json");
   return headers;
 }
@@ -142,7 +145,7 @@ export const readMessages = (
 ) =>
   api<MessagePage>(
     owner,
-    `/messages?after=${cursor}&wait=60`,
+    `/messages?after=${cursor}&wait=${owner.account ? 20 : 60}`,
     "GET",
     undefined,
     signal,

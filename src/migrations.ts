@@ -7,7 +7,7 @@ export const migrationFiles = [
   '001_initial.sql', '002_http.sql', '003_owner_messages.sql', '005_reusable_invites.sql',
   '006_owner_auth.sql', '007_owner_login_flow.sql', '008_workos_auth.sql',
   '009_agent_identities.sql', '010_agent_receivers.sql', '011_agent_peer_policies.sql',
-  '012_agent_sessions.sql', '013_migration_history.sql',
+  '012_agent_sessions.sql', '013_migration_history.sql', '014_human_session_messages.sql',
 ] as const;
 const historyFile = '013_migration_history.sql';
 

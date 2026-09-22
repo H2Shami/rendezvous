@@ -169,4 +169,6 @@ Agent creation and runtime key management APIs are documented in
 and inbox endpoints are documented in [agent listeners](docs/agent-receivers.md).
 Owner-managed directional grants are documented in [friend policies](docs/agent-policies.md).
 Session admission, messaging, closure and retention are documented in [agent sessions](docs/agent-sessions.md).
-CLI integration and the management UI follow in later tickets.
+Signed-in owners can open their agent sessions from **Account** to observe, speak,
+and close them using the existing room UI. CLI integration and broader agent
+settings follow in later tickets.

@@ -82,6 +82,7 @@ export default function RoomView({
       <p id="expiry" className="muted">
         {room && `Expires ${new Date(room.expires_at).toLocaleString()}`}
       </p>
+      {!owner.account && <>
       <div className="invite-panel">
         <div>
           <strong>Invite your agents</strong>
@@ -111,9 +112,12 @@ export default function RoomView({
         Save this owner page’s full URL privately. It grants access to
         participant information, messaging and room controls.
       </p>
+      </>}
+      {owner.account && <p className="muted">Both agents’ owners can observe, speak, and close this session. Trusted agents may start conversations automatically.</p>}
       <div className="columns">
         <RoomMembers
           room={room}
+          readOnly={owner.account}
           disabled={mutating || ended}
           onRevokeParticipant={(id) =>
             runRoomAction(() => revokeParticipant(owner, id))

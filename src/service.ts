@@ -1,3 +1,4 @@
+import { SessionEngine } from "./session-engine.js";
 import { one, type Database, type Queryable } from "./db.js";
 import {
   exactFields,
@@ -46,10 +47,8 @@ export class Service {
   rate;
   metrics: Record<string, number> = {};
   logger;
-  // Notifications only wake reads; all message data and ordering live in PostgreSQL.
-  waiters = new Map<string, Set<() => void>>();
-  private waiterCounts = new Map<string, number>();
-  private waiterTotal = 0;
+  readonly engine: SessionEngine;
+  get waiters() { return this.engine.waiters; }
 
   constructor(
     public db: Database,
@@ -67,6 +66,7 @@ export class Service {
       maxWaiters: 1000,
       ...config,
     };
+    this.engine = new SessionEngine(this.config.maxWaiters);
     this.clock = config.clock || Date.now;
     this.rate = new RateLimiter(this.clock);
     this.logger =
@@ -312,7 +312,7 @@ export class Service {
     return { ...result, participant_token: token };
   }
   notify(id: string) {
-    for (const wake of this.waiters.get(id) || []) wake();
+    this.engine.notify(id);
   }
   async send(id: string, token: string, body: unknown) {
     exactFields(body, ["content"]);
@@ -337,15 +337,8 @@ export class Service {
         "Rendezvous message limit reached.",
         429,
       );
-      const m = await one<Message>(
-        tx,
-        "INSERT INTO messages(id,session_id,sender_participant_id,sequence,content,created_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,sequence,COALESCE(sender_participant_id::text,'owner') AS sender_id,content,created_at",
-        [uuid(), id, p?.id ?? null, s.next_sequence, body.content, this.now()],
-      );
-      await tx.query(
-        "UPDATE sessions SET next_sequence=next_sequence+1 WHERE id=$1",
-        [id],
-      );
+      const stored = await this.engine.append(tx, id, { participantId: p?.id, content: body.content as string, now: this.now() });
+      const m = { ...stored, sender_id: p?.id ?? 'owner', content: body.content as string };
       if (p)
         await tx.query("UPDATE participants SET last_seen_at=$2 WHERE id=$1", [
           p.id,
@@ -382,127 +375,23 @@ export class Service {
       ).rows;
     const initialRoster = JSON.stringify(await roster(this.db));
     const key = initial.p?.id || `owner:${id}`;
-    requireThat(
-      this.waiterTotal < this.config.maxWaiters &&
-        (this.waiterCounts.get(key) || 0) < 3,
-      "TOO_MANY_POLLS",
-      "Too many concurrent reads; retry later.",
-      429,
-    );
-    signal?.throwIfAborted();
-    const deadline = Date.now() + wait * 1000;
-    let pending = false,
-      resume: (() => void) | undefined;
-    const wake = () => {
-      pending = true;
-      resume?.();
-    };
-    const listeners = this.waiters.get(id) || new Set<() => void>();
-    listeners.add(wake);
-    this.waiters.set(id, listeners);
-    this.waiterCounts.set(key, (this.waiterCounts.get(key) || 0) + 1);
-    this.waiterTotal++;
-    signal?.addEventListener("abort", wake, { once: true });
     const started = Date.now();
-    this.log("poll.started", {
-      session_id: id,
-      participant_id: initial.p?.id,
-      after,
-      wait,
-    });
+    this.log('poll.started', { session_id: id, participant_id: initial.p?.id, after, wait });
     try {
-      if (initial.p && this.status(initial.s) !== "expired")
-        await this.db.query(
-          "UPDATE participants SET last_seen_at=$2 WHERE id=$1",
-          [initial.p.id, this.now()],
-        );
-      while (true) {
-        signal?.throwIfAborted();
-        // Registration precedes this snapshot: inserts racing the read cannot be lost.
-        pending = false;
-        const snapshot = await this.db.transaction(async (tx) => {
-          const { s } = await this.reader(tx, id, token, true, true);
-          const status = this.status(s);
-          if (status === "expired")
-            return {
-              page: {
-                messages: [],
-                participants: [],
-                cursor: after,
-                session_status: status,
-              } satisfies MessagePage,
-              expires: 0,
-            };
-          requireThat(
-            after < s.next_sequence,
-            "INVALID_CURSOR",
-            "Cursor is ahead of the message log. Use the last GET response cursor.",
-          );
-          const rows = (
-            await tx.query<Message>(
-              "SELECT id,sequence,COALESCE(sender_participant_id::text,'owner') AS sender_id,content,created_at FROM messages WHERE session_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 100",
-              [id, after],
-            )
-          ).rows;
-          return {
-            page: {
-              messages: rows,
-              participants: await roster(tx),
-              cursor: rows.at(-1)?.sequence ?? after,
-              session_status: status,
-            },
-            expires: new Date(s.expires_at).getTime() - this.clock(),
-          };
-        });
-        const remaining = Math.min(deadline - Date.now(), snapshot.expires);
-        if (
-          snapshot.page.messages.length ||
-          JSON.stringify(snapshot.page.participants) !== initialRoster ||
-          ["closed", "expired"].includes(snapshot.page.session_status) ||
-          remaining <= 0
-        ) {
-          this.log(
-            snapshot.page.messages.length ? "poll.delivered" : "poll.empty",
-            {
-              session_id: id,
-              participant_id: initial.p?.id,
-              after,
-              cursor: snapshot.page.cursor,
-              count: snapshot.page.messages.length,
-              status: snapshot.page.session_status,
-              duration_ms: Date.now() - started,
-            },
-          );
-          return snapshot.page;
-        }
-        if (pending) continue;
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            resume = undefined;
-            resolve();
-          }, remaining);
-          resume = () => {
-            clearTimeout(timer);
-            resume = undefined;
-            resolve();
-          };
-          if (pending || signal?.aborted) resume();
-        });
-      }
+      if (initial.p && this.status(initial.s) !== 'expired') await this.db.query('UPDATE participants SET last_seen_at=$2 WHERE id=$1', [initial.p.id, this.now()]);
+      const page = await this.engine.poll(id, `room:${key}`, wait, () => this.db.transaction(async tx => {
+        const { s } = await this.reader(tx, id, token, true, true), status = this.status(s);
+        if (status === 'expired') return { value: { messages: [], participants: [], cursor: after, session_status: status } as MessagePage, ready: true };
+        requireThat(after < s.next_sequence, 'INVALID_CURSOR', 'Cursor is ahead of the message log. Use the last GET response cursor.');
+        const rows = (await this.engine.read(tx, id, after)).map(m => ({ id: m.id, sequence: m.sequence, sender_id: m.sender_participant_id ?? 'owner', content: m.content, created_at: m.created_at }));
+        const participants = await roster(tx);
+        return { value: { messages: rows, participants, cursor: rows.at(-1)?.sequence ?? after, session_status: status } as MessagePage,
+          ready: rows.length > 0 || JSON.stringify(participants) !== initialRoster || status === 'closed', expiresIn: new Date(s.expires_at).getTime() - this.clock() };
+      }), signal, 'TOO_MANY_POLLS');
+      this.log(page.messages.length ? 'poll.delivered' : 'poll.empty', { session_id: id, participant_id: initial.p?.id, after, cursor: page.cursor, count: page.messages.length, status: page.session_status, duration_ms: Date.now() - started });
+      return page;
     } finally {
-      signal?.removeEventListener("abort", wake);
-      listeners.delete(wake);
-      if (!listeners.size) this.waiters.delete(id);
-      this.waiterTotal--;
-      const count = this.waiterCounts.get(key)! - 1;
-      if (count) this.waiterCounts.set(key, count);
-      else this.waiterCounts.delete(key);
-      if (signal?.aborted)
-        this.log("poll.disconnected", {
-          session_id: id,
-          participant_id: initial.p?.id,
-          after,
-        });
+      if (signal?.aborted) this.log('poll.disconnected', { session_id: id, participant_id: initial.p?.id, after });
     }
   }
 
@@ -556,7 +445,7 @@ export class Service {
   async close(id: string, token: string) {
     await this.db.transaction(async (tx) => {
       await this.owner(tx, id, token, true);
-      await tx.query("UPDATE sessions SET status='CLOSED' WHERE id=$1", [id]);
+      await this.engine.close(tx, id);
       await this.event(tx, "session.closed", id);
     });
     this.log("session.closed", { session_id: id });

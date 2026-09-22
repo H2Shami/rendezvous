@@ -327,7 +327,7 @@ test('agent session messages and receipts survive closing and reopening durable 
     const message = { receiver: a.receiver, client_message_id: uuid(), content: 'Durable message' };
     const original = await s.sessions.send(a.p, id, message);
     // Adopt a database created by REN-10 before the migration ledger was added.
-    await db.exec('DROP TABLE schema_migrations');
+    await db.exec('ALTER TABLE messages DROP CONSTRAINT messages_one_sender; ALTER TABLE messages DROP COLUMN sender_owner_id; DROP TABLE schema_migrations');
     await db.close(); db = await openDatabase({ dataDir: dir }); s = services();
     await s.receivers.cleanup(); await s.sessions.cleanup();
     const authenticated = await s.identities.authenticate(a.key.api_key);

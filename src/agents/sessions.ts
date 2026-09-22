@@ -1,3 +1,4 @@
+import { SessionEngine } from '../session-engine.js';
 import { createHash } from 'node:crypto';
 import { one, type Database, type Queryable } from '../db.js';
 import { exactFields, HttpError, integer, requireThat, uuid } from '../validation.js';
@@ -20,19 +21,21 @@ interface Receipt { id: string; sequence: number; sender_agent_id: string; clien
 const snapshot = ({ limits_json, history_purged_at: _purged, ...s }: SessionRow) => ({ ...s, limits: limits_json });
 const fingerprint = (parts: unknown[]) => createHash('sha256').update(JSON.stringify(parts), 'utf8').digest('hex');
 const idInput = (v: unknown) => { requireThat(typeof v === 'string', 'INVALID_REQUEST', 'Expected a UUID.'); return agentId(v); };
+type SessionActor = AgentPrincipal | { owner_id: string };
 const terminal = (s: SessionRow) => s.state === 'closed' || s.state === 'expired';
 
 export class AgentSessionService {
-  readonly waiters = new Map<string, Set<() => void>>();
-  private counts = new Map<string, number>();
-  private total = 0;
-  private stopped = false;
+  get waiters() { return this.engine.waiters; }
   constructor(readonly db: Database, private receivers: ReceiverService, private policies: AgentPolicyService,
-    private clock = Date.now, private log: (event: string, fields: Record<string, unknown>) => void = () => {}) {}
-  notify(id: string) { for (const wake of this.waiters.get(id) ?? []) wake(); }
+    private clock = Date.now, private log: (event: string, fields: Record<string, unknown>) => void = () => {}, readonly engine = new SessionEngine()) {}
+  notify(id: string) { this.engine.notify(id); }
   private changed(id: string) { this.notify(id); this.receivers.notify(); }
-  shutdown() { this.stopped = true; for (const id of this.waiters.keys()) this.notify(id); }
-  private async auth(tx: Queryable, p: AgentPrincipal) {
+  shutdown() { this.engine.shutdown(); }
+  private async auth(tx: Queryable, p: SessionActor) {
+    if ('owner_id' in p) {
+      requireThat(await one(tx, 'SELECT id FROM owners WHERE id=$1 AND disabled_at IS NULL', [p.owner_id]), 'OWNER_UNAUTHORIZED', 'Sign in to continue.', 401);
+      return;
+    }
     const valid = await one(tx, `SELECT c.id FROM agent_credentials c JOIN agents a ON a.id=c.agent_id JOIN owners o ON o.id=a.owner_id
       WHERE c.id=$1 AND a.id=$2 AND c.revoked_at IS NULL AND a.disabled_at IS NULL AND o.disabled_at IS NULL`, [p.credential_id, p.agent_id]);
     requireThat(valid, 'UNAUTHORIZED', 'Invalid agent credential.', 401);
@@ -41,8 +44,10 @@ export class AgentSessionService {
     const s = await one<SessionRow>(tx, `SELECT * FROM agent_sessions WHERE id=$1${lock ? ' FOR UPDATE' : ''}`, [id]);
     requireThat(s, 'NOT_FOUND', 'Session not found.', 404); return s;
   }
-  private member(s: SessionRow, p: AgentPrincipal) {
-    requireThat(p.agent_id === s.initiator_agent_id || p.agent_id === s.recipient_agent_id, 'NOT_FOUND', 'Session not found.', 404);
+  private async member(tx: Queryable, s: SessionRow, p: SessionActor) {
+    if ('owner_id' in p) {
+      requireThat(await one(tx, 'SELECT id FROM agents WHERE id IN ($1,$2) AND owner_id=$3', [s.initiator_agent_id, s.recipient_agent_id, p.owner_id]), 'NOT_FOUND', 'Session not found.', 404);
+    } else requireThat(p.agent_id === s.initiator_agent_id || p.agent_id === s.recipient_agent_id, 'NOT_FOUND', 'Session not found.', 404);
   }
   private async binding(tx: Queryable, id: string, agent: string) {
     const b = await one<Binding>(tx, `SELECT agent_id,participant_id,binding_id,lease_id,generation::text,stopped_at
@@ -80,10 +85,10 @@ export class AgentSessionService {
   }
   /** All session operations acquire agent locks before the session lock. Expected
    * rejections commit lifecycle reconciliation; unexpected DB failures roll back. */
-  private async run<T>(p: AgentPrincipal, id: string, mutate: boolean, fn: (tx: Queryable, s: SessionRow) => Promise<T>) {
+  private async run<T>(p: SessionActor, id: string, mutate: boolean, fn: (tx: Queryable, s: SessionRow) => Promise<T>) {
     id = agentId(id);
     const result = await this.db.transaction(async tx => {
-      const initial = await this.row(tx, id); this.member(initial, p);
+      const initial = await this.row(tx, id); await this.member(tx, initial, p);
       await this.policies.lockPair(tx, initial.initiator_agent_id, initial.recipient_agent_id);
       await this.auth(tx, p);
       const locked = await this.row(tx, id, true), s = await this.reconcile(tx, locked);
@@ -185,69 +190,96 @@ export class AgentSessionService {
         this.same(old, r); requireThat(old.fingerprint === hash, 'IDEMPOTENCY_CONFLICT', 'Message ID was used with different content.', 409);
         const { fingerprint: _hash, lease_id: _lease, generation: _gen, content: text, ...message } = old;
         const purged = s.history_purged_at || (s.closed_at && s.closed_at.getTime() + TRANSCRIPT_MS <= this.clock());
-        return { replay: true, body: { protocol, message: purged || text === null ? { ...message, payload_expired: true as const } : { ...message, content: text } } };
+        return { replay: true, body: { protocol, message: purged || text === null ? { ...message, sender_type: 'agent' as const, payload_expired: true as const } : { ...message, sender_type: 'agent' as const, content: text } } };
       }
       await this.bound(tx, s, p, r);
       requireThat(s.state === 'active', terminal(s) ? 'SESSION_TERMINAL' : 'SESSION_NOT_ACTIVE', 'Session is not active.', 409);
       requireThat(b.binding_id && !b.stopped_at, 'BINDING_CONFLICT', 'No active conversation binding.', 409);
       requireThat(Buffer.byteLength(content, 'utf8') <= s.limits_json.max_message_bytes, 'REQUEST_TOO_LARGE', 'Message exceeds session byte limit.', 413);
-      const room = (await one<{ next_sequence: number }>(tx, 'SELECT next_sequence FROM sessions WHERE id=$1 FOR UPDATE', [id]))!;
-      if (room.next_sequence > s.limits_json.message_budget) {
+      const nextSequence = await this.engine.sequence(tx, id, true);
+      if (nextSequence > s.limits_json.message_budget) {
         await closeAgentSession(tx, id, 'MESSAGE_BUDGET', new Date(this.clock()));
         throw new HttpError('SESSION_TERMINAL', 'Session message budget exhausted.', 409);
       }
-      const now = new Date(this.clock()), messageId = uuid(), sequence = room.next_sequence;
-      await tx.query('UPDATE sessions SET next_sequence=next_sequence+1 WHERE id=$1', [id]);
-      await tx.query('INSERT INTO messages(id,session_id,sender_participant_id,sequence,content,created_at,client_message_id) VALUES($1,$2,$3,$4,$5,$6,$7)', [messageId, id, b.participant_id, sequence, content, now, clientId]);
+      const now = new Date(this.clock());
+      const { id: messageId, sequence } = await this.engine.append(tx, id, { participantId: b.participant_id, clientId, content, now });
       await tx.query(`INSERT INTO agent_message_receipts(session_id,participant_id,client_message_id,fingerprint,id,sequence,sender_agent_id,lease_id,generation,created_at)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [id, b.participant_id, clientId, hash, messageId, sequence, p.agent_id, r.lease_id, r.generation, now]);
       await tx.query('UPDATE agent_sessions SET idle_expires_at=$2,version=version+1 WHERE id=$1', [id, new Date(Math.min(s.expires_at.getTime(), now.getTime() + s.limits_json.idle_timeout_seconds * 1000))]);
       if (sequence === s.limits_json.message_budget) await closeAgentSession(tx, id, 'MESSAGE_BUDGET', now);
-      return { replay: false, body: { protocol, message: { id: messageId, sequence, sender_agent_id: p.agent_id, client_message_id: clientId, content, created_at: now } } };
+      return { replay: false, body: { protocol, message: { id: messageId, sequence, sender_agent_id: p.agent_id, sender_type: 'agent' as const, client_message_id: clientId, content, created_at: now } } };
     });
   }
-  private async read(p: AgentPrincipal, id: string, after: number, messages: boolean) {
+  private async read(p: SessionActor, id: string, after: number, messages: boolean) {
     return this.run(p, id, false, async (tx, s) => {
       if (!messages) {
         requireThat(after <= s.version, 'INVALID_REQUEST', 'Version is ahead of session state.');
         return { body: { protocol, session: snapshot(s) }, ready: s.version > after || terminal(s) };
       }
       requireThat(!s.history_purged_at && !(s.closed_at && s.closed_at.getTime() + TRANSCRIPT_MS <= this.clock()), 'HISTORY_EXPIRED', 'Session transcript has expired.', 410);
-      const room = (await one<{ next_sequence: number }>(tx, 'SELECT next_sequence FROM sessions WHERE id=$1', [id]))!;
-      requireThat(after < room.next_sequence, 'INVALID_REQUEST', 'Cursor is ahead of session history.');
-      const rows = await tx.query<{ id: string; sequence: number; sender_agent_id: string; client_message_id: string; content: string; created_at: Date }>(`SELECT m.id,m.sequence,p.agent_id AS sender_agent_id,m.client_message_id,m.content,m.created_at
-        FROM messages m JOIN participants p ON p.id=m.sender_participant_id WHERE m.session_id=$1 AND m.sequence>$2 ORDER BY m.sequence LIMIT 100`, [id, after]);
-      return { body: { protocol, session: snapshot(s), messages: rows.rows, cursor: rows.rows.at(-1)?.sequence ?? after }, ready: rows.rows.length > 0 || terminal(s) };
+      const nextSequence = await this.engine.sequence(tx, id);
+      requireThat(after < nextSequence, 'INVALID_REQUEST', 'Cursor is ahead of session history.');
+      const rows = (await this.engine.read(tx, id, after)).map(m => ({ id: m.id, sequence: m.sequence, sender_agent_id: m.sender_agent_id,
+        sender_type: m.sender_owner_id ? 'human' as const : 'agent' as const, client_message_id: m.client_message_id, content: m.content, created_at: m.created_at }));
+      return { body: { protocol, session: snapshot(s), messages: rows, cursor: rows.at(-1)?.sequence ?? after }, ready: rows.length > 0 || terminal(s) };
     });
   }
-  async poll(p: AgentPrincipal, id: string, after: number, wait: number, messages: boolean, signal?: AbortSignal) {
+  async poll(p: SessionActor, id: string, after: number, wait: number, messages: boolean, signal?: AbortSignal) {
     integer(after, 0, 2147483647, 'cursor'); integer(wait, 0, 20, 'wait');
     // Authenticate/membership-check before allocating a waiter. Register before the next read to avoid lost wakeups.
     const first = await this.read(p, id, after, messages);
     if (first.ready || wait === 0) return first.body;
-    requireThat(this.total < 1000 && (this.counts.get(p.agent_id) ?? 0) < 3, 'RATE_LIMITED', 'Too many session polls.', 429);
-    let pending = false, resume: (() => void) | undefined;
-    const wake = () => { pending = true; resume?.(); };
-    const listeners = this.waiters.get(id) ?? new Set<() => void>(); listeners.add(wake); this.waiters.set(id, listeners);
-    this.total++; this.counts.set(p.agent_id, (this.counts.get(p.agent_id) ?? 0) + 1);
-    signal?.addEventListener('abort', wake, { once: true }); const deadline = Date.now() + wait * 1000;
-    try {
-      while (true) {
-        signal?.throwIfAborted(); requireThat(!this.stopped, 'SERVICE_UNAVAILABLE', 'Server is shutting down.', 503);
-        pending = false;
-        const result = await this.read(p, id, after, messages);
-        if (result.ready || Date.now() >= deadline) return result.body;
-        if (pending) continue;
-        await new Promise<void>(resolve => {
-          const timer = setTimeout(() => { resume = undefined; resolve(); }, Math.min(1000, deadline - Date.now()));
-          resume = () => { clearTimeout(timer); resume = undefined; resolve(); };
-          if (pending || signal?.aborted) resume();
-        });
+    return this.engine.poll(id, 'owner_id' in p ? `account:${p.owner_id}` : `agent:${p.agent_id}`, wait, async () => {
+      const result = await this.read(p, id, after, messages); return { value: result.body, ready: result.ready };
+    }, signal);
+  }
+
+  async ownerList(owner: string, after?: string, limit = 50) {
+    await this.auth(this.db, { owner_id: owner });
+    const rows = (await this.db.query<{ id: string; state: string; created_at: Date; initiator_name: string; recipient_name: string }>(`SELECT s.id,s.state,s.created_at,a.display_name AS initiator_name,b.display_name AS recipient_name
+      FROM agent_sessions s JOIN agents a ON a.id=s.initiator_agent_id JOIN agents b ON b.id=s.recipient_agent_id
+      WHERE (a.owner_id=$1 OR b.owner_id=$1) AND ($2::uuid IS NULL OR s.id>$2) ORDER BY s.id LIMIT $3`, [owner, after ?? null, limit + 1])).rows;
+    return { sessions: rows.slice(0, limit), next_cursor: rows.length > limit ? rows[limit - 1].id : null };
+  }
+  async ownerRoom(owner: string, id: string) {
+    return this.run({ owner_id: owner }, id, false, async (tx, s) => {
+      const participants = (await tx.query<{ id: string; display_name: string }>('SELECT id,display_name FROM agents WHERE id IN ($1,$2) ORDER BY id', [s.initiator_agent_id, s.recipient_agent_id])).rows;
+      return { status: s.state.toUpperCase(), expires_at: s.expires_at, max_participants: 2,
+        participants: participants.map(p => ({ ...p, left_at: null, revoked_at: null })), invites: [] };
+    });
+  }
+  async ownerMessages(owner: string, id: string, after: number, wait: number, signal?: AbortSignal) {
+    const page = await this.poll({ owner_id: owner }, id, after, wait, true, signal);
+    const room = await this.ownerRoom(owner, id);
+    const messages = ('messages' in page ? page.messages : []) ?? [];
+    return { messages: messages.map(m => ({ ...m, sender_id: m.sender_agent_id ?? 'owner' })),
+      cursor: 'cursor' in page ? page.cursor : after, session_status: page.session.state, participants: room.participants };
+  }
+  async ownerSend(owner: string, id: string, body: unknown) {
+    exactFields(body, ['content']);
+    requireThat(typeof body.content === 'string' && body.content.trim().length > 0, 'INVALID_REQUEST', 'content must be nonempty text.');
+    const content = body.content;
+    return this.run({ owner_id: owner }, id, true, async (tx, s) => {
+      requireThat(!terminal(s), 'SESSION_TERMINAL', 'Session has ended.', 409);
+      requireThat(Buffer.byteLength(content) <= s.limits_json.max_message_bytes, 'REQUEST_TOO_LARGE', 'Message exceeds session byte limit.', 413);
+      const next = await this.engine.sequence(tx, id, true);
+      if (next > s.limits_json.message_budget) {
+        await closeAgentSession(tx, id, 'MESSAGE_BUDGET', new Date(this.clock()));
+        throw new HttpError('SESSION_TERMINAL', 'Session message budget exhausted.', 409);
       }
-    } finally {
-      signal?.removeEventListener('abort', wake); listeners.delete(wake); if (!listeners.size) this.waiters.delete(id);
-      this.total--; const count = this.counts.get(p.agent_id)! - 1; if (count) this.counts.set(p.agent_id, count); else this.counts.delete(p.agent_id);
-    }
+      const now = new Date(this.clock());
+      const message = await this.engine.append(tx, id, { ownerId: owner, content, now });
+      await tx.query('UPDATE agent_sessions SET version=version+1,idle_expires_at=$2 WHERE id=$1', [id,
+        s.state === 'active' ? new Date(Math.min(s.expires_at.getTime(), now.getTime() + s.limits_json.idle_timeout_seconds * 1000)) : null]);
+      if (message.sequence === s.limits_json.message_budget) await closeAgentSession(tx, id, 'MESSAGE_BUDGET', now);
+      return { ...message, content, sender_id: 'owner', sender_type: 'human' };
+    });
+  }
+  async ownerClose(owner: string, id: string) {
+    return this.run({ owner_id: owner }, id, true, async (tx, s) => {
+      await closeAgentSession(tx, id, 'COMPLETED', new Date(this.clock()));
+      return { status: 'CLOSED', session: snapshot(await this.row(tx, s.id)) };
+    });
   }
   async cleanup() {
     // Receiver cleanup runs first; reconcile every live session for deadline/lease loss.
@@ -260,10 +292,10 @@ export class AgentSessionService {
         if (!initial) return false;
         const s = await this.reconcile(tx, initial), now = this.clock();
         if (s.closed_at && s.closed_at.getTime() + SESSION_RETENTION_MS <= now) {
-          await tx.query('DELETE FROM sessions WHERE id=$1', [s.id]); return true;
+          await this.engine.remove(tx, s.id); return true;
         }
         if (s.closed_at && !s.history_purged_at && s.closed_at.getTime() + TRANSCRIPT_MS <= now) {
-          await tx.query('DELETE FROM messages WHERE session_id=$1', [s.id]);
+          await this.engine.purgeTranscript(tx, s.id);
           await tx.query('UPDATE agent_sessions SET history_purged_at=$2 WHERE id=$1', [s.id, new Date(now)]); return true;
         }
         return s.version !== initial.version;

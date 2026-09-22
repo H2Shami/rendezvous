@@ -40,9 +40,9 @@ export function createApplication(
   const agents = new AgentIdentityService(service.db, service.auth, service.clock, { invalidate: (tx, event) => receivers.invalidate(tx, event) });
   const policies = new AgentPolicyService(service.db, service.clock, sessions => {
     receivers.notify();
-    for (const id of sessions) { service.notify(id); agentSessions.notify(id); }
+    for (const id of sessions) service.notify(id);
   });
-  const agentSessions = new AgentSessionService(service.db, receivers, policies, service.clock, (event, fields) => service.log(event, fields));
+  const agentSessions = new AgentSessionService(service.db, receivers, policies, service.clock, (event, fields) => service.log(event, fields), service.engine);
   const token = (req: express.Request) =>
     req.headers.authorization?.startsWith("Bearer ")
       ? req.headers.authorization.slice(7)
@@ -125,7 +125,7 @@ export function createApplication(
     try { service.limit(`owner-login:${req.ip}`, 30, 3600000); next(); }
     catch (error) { next(error); }
   });
-  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents, policies));
+  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents, policies, agentSessions));
   app.use("/api/v1/agents", runtimeIdentityRoutes(agents, receivers));
   app.use("/api/v1/agent-sessions", agentSessionRoutes(agents, agentSessions));
   app.get("/health", async (_req, res) => {

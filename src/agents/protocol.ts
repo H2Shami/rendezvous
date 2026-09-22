@@ -86,8 +86,9 @@ export interface SendMessageInput extends ReceiverInput {
 export interface SessionMessage {
   id: UUID;
   sequence: number;
-  sender_agent_id: UUID;
-  client_message_id: UUID;
+  sender_type: "agent" | "human";
+  sender_agent_id: UUID | null;
+  client_message_id: UUID | null;
   content: string;
   created_at: Timestamp;
 }

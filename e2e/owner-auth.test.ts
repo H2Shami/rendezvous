@@ -53,7 +53,7 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
     await page.reload();
     await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor();
     // Management requests use the real SDK session and CSRF through Next's proxy.
-    const agentId = await page.evaluate(async () => {
+    const createdAgent = await page.evaluate(async () => {
       const me = await (await fetch('/api/v1/owner/me')).json();
       const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': me.csrf_token };
       const created = await fetch('/api/v1/owner/agents', { method: 'POST', headers, body: JSON.stringify({ display_name: 'Browser agent' }) });
@@ -82,14 +82,49 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
       const heartbeat = await fetch('/api/v1/agents/me/receiver/heartbeat', { method: 'POST', headers: receiverHeaders,
         body: JSON.stringify({ receiver, accepting_sessions: true }) });
       if (heartbeat.status !== 200) throw new Error('Receiver heartbeat failed');
-      const revoked = await fetch(`/api/v1/owner/agents/${agent.id}/credentials/${credential.id}`, { method: 'DELETE', headers });
-      if (revoked.status !== 200) throw new Error('Credential revocation failed');
-      if ((await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${api_key}` } })).status !== 401) throw new Error('Revoked key accepted');
-      return agent.id;
+      const peerIssued = await (await fetch(`/api/v1/owner/agents/${peer.id}/credentials`, { method: 'POST', headers, body: '{}' })).json();
+      const peerHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${peerIssued.api_key}` };
+      const peerLease = await (await fetch('/api/v1/agents/me/receiver', { method: 'POST', headers: peerHeaders, body: JSON.stringify({ connection_id: crypto.randomUUID(), takeover: false }) })).json();
+      for (const [left, right] of [[agent.id, peer.id], [peer.id, agent.id]]) {
+        const grant = await fetch(`/api/v1/owner/agents/${left}/peers/${right}`, { method: 'PUT', headers, body: JSON.stringify({ allow_inbound: true, allow_outbound: true }) });
+        if (!grant.ok) throw new Error('Grant failed');
+      }
+      const opened = await fetch('/api/v1/agent-sessions', { method: 'POST', headers: receiverHeaders, body: JSON.stringify({ receiver, recipient_agent_id: peer.id, idempotency_key: crypto.randomUUID(), binding_id: crypto.randomUUID() }) });
+      if (opened.status !== 201) throw new Error('Session open failed');
+      const { session } = await opened.json();
+      const accepted = await fetch(`/api/v1/agent-sessions/${session.id}/accept`, { method: 'POST', headers: peerHeaders, body: JSON.stringify({ receiver: peerLease.receiver, binding_id: crypto.randomUUID() }) });
+      if (!accepted.ok) throw new Error('Session accept failed');
+      const sent = await fetch(`/api/v1/agent-sessions/${session.id}/messages`, { method: 'POST', headers: receiverHeaders, body: JSON.stringify({ receiver, client_message_id: crypto.randomUUID(), content: 'Agent hello' }) });
+      if (sent.status !== 201) throw new Error('Agent send failed');
+      return { agentId: agent.id, sessionId: session.id, credentialId: credential.id, apiKey: api_key };
     });
-    assert.match(agentId, /^[0-9a-f-]{36}$/);
+    const { agentId, sessionId } = createdAgent;
+    await page.getByRole('button', { name: 'Refresh sessions', exact: true }).click();
+    await page.getByRole('link', { name: 'Browser agent ↔ Browser peer', exact: true }).click();
+    assert.equal(page.url(), `${origin}/rooms/${sessionId}`);
+    await page.locator('#messages').getByText('Agent hello', { exact: true }).waitFor();
+    await page.locator('#message-content').fill('Human intervention');
+    await page.locator('#send-message').click();
+    await page.locator('#messages').getByText('Human intervention', { exact: true }).waitFor();
+    await page.locator('#messages').getByText('Human owner', { exact: true }).waitFor();
+    assert.equal(await page.locator('#copy-invite').count(), 0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: '/tmp/rendezvous-owner-agent-room.png', fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const human = await f.db.query<{ sender_owner_id: string }>('SELECT sender_owner_id FROM messages WHERE session_id=$1 AND content=$2', [sessionId, 'Human intervention']);
+    assert.ok(human.rows[0].sender_owner_id);
+    await page.locator('#close-session').click();
+    await page.locator('#status').filter({ hasText: 'CLOSED' }).waitFor();
+    await page.evaluate(async ({ agentId, credentialId, apiKey }) => {
+      const me = await (await fetch('/api/v1/owner/me')).json();
+      const revoked = await fetch(`/api/v1/owner/agents/${agentId}/credentials/${credentialId}`, { method: 'DELETE', headers: { 'X-CSRF-Token': me.csrf_token } });
+      if (revoked.status !== 200) throw new Error('Credential revocation failed');
+      if ((await fetch('/api/v1/agents/me', { headers: { Authorization: `Bearer ${apiKey}` } })).status !== 401) throw new Error('Revoked key accepted');
+    }, createdAgent);
     const ended = await f.db.query<{ ended_at: Date }>('SELECT ended_at FROM agent_receivers WHERE agent_id=$1', [agentId]);
-    assert.ok(ended.rows[0].ended_at); // Owner revocation invokes the receiver invalidation hook.
+    assert.ok(ended.rows[0].ended_at);
+    await page.goto(`${origin}/account`);
     const other = await browser.newContext(); const otherPage = await other.newPage();
     await otherPage.goto(`${origin}/account`);
     await otherPage.getByRole('link', { name: 'Sign in', exact: true }).waitFor();
@@ -108,6 +143,7 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
   } finally {
     await browser?.close();
     if (frontend.exitCode === null) { const stopped = once(frontend, 'exit'); frontend.kill('SIGTERM'); await stopped; }
+    await f.db.query('DELETE FROM sessions WHERE id IN (SELECT s.id FROM agent_sessions s JOIN agents a ON a.id=s.initiator_agent_id JOIN owners o ON o.id=a.owner_id WHERE o.issuer=$1)', [workos.issuer]);
     await f.db.query('DELETE FROM agent_receivers WHERE agent_id IN (SELECT a.id FROM agents a JOIN owners o ON a.owner_id=o.id WHERE o.issuer=$1)', [workos.issuer]);
     await f.db.query('DELETE FROM agent_connections WHERE agent_id IN (SELECT a.id FROM agents a JOIN owners o ON a.owner_id=o.id WHERE o.issuer=$1)', [workos.issuer]);
     await f.db.query('DELETE FROM agent_credentials WHERE agent_id IN (SELECT a.id FROM agents a JOIN owners o ON a.owner_id=o.id WHERE o.issuer=$1)', [workos.issuer]);
