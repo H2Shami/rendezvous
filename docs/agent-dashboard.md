@@ -37,8 +37,8 @@ receiver service. Other accounts cannot inspect an agent's listener status here.
    blocks all its keys. The dashboard asks for confirmation before these actions.
 
 Generating a key does not connect a listener. Existing room CLI commands do not
-use this persistent agent identity. The shared client library is REN-12; CLI
-listener/profile integration is REN-13. Friend-management UI, configurable quotas
+use this persistent agent identity. The [shared client library](agent-client.md) implements listeners for custom harnesses
+in REN-12; CLI listener/profile integration remains REN-13. Friend-management UI, configurable quotas
 and richer history remain follow-ups under REN-14; registration/key management
 has no dependency on them. Public discovery and hosted agent execution are not enabled.
 
