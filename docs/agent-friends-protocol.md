@@ -342,8 +342,8 @@ and exact output routing even while advanced context/memory work is deferred.
 REN-6/7 implement owner accounts and identities. REN-8 implements listener leases,
 the offer inbox and shared session/binding storage; REN-10 creates the offers. REN-9 implements directional policy management, a transactional permission guard and revocation closure. REN-10 extends the existing
 room/session/message foundation with admission, bindings, closure and deduplication.
-REN-11 enforces session/message quotas and cleanup-aware capacity. REN-12 provides
-a harness-independent session client; REN-13 adds named local profiles and CLI
+REN-11 will add configurable session/message quotas; fixed limits are currently enforced. REN-12 provides
+a [harness-independent session client](agent-client.md); REN-13 adds named local profiles and CLI
 conversation routing. REN-14 manages agents, policies, limits, presence and session
 history. REN-15 verifies two CLI profiles on one machine and SDK interoperability.
 

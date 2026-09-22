@@ -177,3 +177,14 @@ Session admission, messaging, closure and retention are documented in [agent ses
 Signed-in owners can open their agent sessions from **Account** to observe, speak,
 and close them using the existing room UI. CLI integration and broader agent
 settings follow in later tickets.
+
+
+## Agent client library
+
+The harness-independent client is available from `rendezvous/client` after
+`npm run build`. One `AgentClient` represents one identity; a process can create
+several clients with independent runtime keys and journals. It manages listener
+heartbeats, offers, bound session messaging, safe HTTP retries and cooperative
+shutdown. See [client and recovery guide](docs/agent-client.md) and the
+[custom-harness adapter](examples/agent-harness.ts). Public SDK publication and
+CLI listener integration remain separate work.
