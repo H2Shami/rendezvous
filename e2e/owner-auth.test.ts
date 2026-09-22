@@ -59,6 +59,16 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
       const created = await fetch('/api/v1/owner/agents', { method: 'POST', headers, body: JSON.stringify({ display_name: 'Browser agent' }) });
       if (created.status !== 201) throw new Error('Agent creation failed');
       const { agent } = await created.json();
+      const peerResponse = await fetch('/api/v1/owner/agents', { method: 'POST', headers, body: JSON.stringify({ display_name: 'Browser peer' }) });
+      if (peerResponse.status !== 201) throw new Error('Peer creation failed');
+      const { agent: peer } = await peerResponse.json();
+      const policyPath = `/api/v1/owner/agents/${agent.id}/peers/${peer.id}`;
+      const saved = await fetch(policyPath, { method: 'PUT', headers, body: JSON.stringify({ allow_inbound: false, allow_outbound: true }) });
+      if (saved.status !== 200) throw new Error('Policy creation failed');
+      const { policy } = await (await fetch(policyPath)).json();
+      if (!policy.allow_outbound || policy.allow_inbound) throw new Error('Incorrect policy flags');
+      if ((await fetch(policyPath, { method: 'DELETE', headers })).status !== 200) throw new Error('Policy deletion failed');
+      if ((await fetch(policyPath)).status !== 404) throw new Error('Deleted policy still present');
       const issued = await fetch(`/api/v1/owner/agents/${agent.id}/credentials`, { method: 'POST', headers, body: '{}' });
       if (issued.status !== 201) throw new Error('Credential issuance failed');
       const { credential, api_key } = await issued.json();

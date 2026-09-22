@@ -7,6 +7,7 @@ import { discovery, endpoints, htmlInstructions } from "./instructions.js";
 import type { Service } from "./service.js";
 import { requestLogging, safeOrigin } from "./logging.js";
 
+import { AgentPolicyService } from "./agents/policies.js";
 import { ReceiverService } from "./agents/receivers.js";
 import { AgentIdentityService } from "./agents/identity.js";
 import { runtimeIdentityRoutes } from "./agents/routes.js";
@@ -35,6 +36,10 @@ export function createApplication(
   const owners = new OwnerService(service.db, service.auth, service.clock);
   const receivers = new ReceiverService(service.db, service.clock);
   const agents = new AgentIdentityService(service.db, service.auth, service.clock, { invalidate: (tx, event) => receivers.invalidate(tx, event) });
+  const policies = new AgentPolicyService(service.db, service.clock, sessions => {
+    receivers.notify();
+    for (const id of sessions) service.notify(id);
+  });
   const token = (req: express.Request) =>
     req.headers.authorization?.startsWith("Bearer ")
       ? req.headers.authorization.slice(7)
@@ -117,7 +122,7 @@ export function createApplication(
     try { service.limit(`owner-login:${req.ip}`, 30, 3600000); next(); }
     catch (error) { next(error); }
   });
-  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents));
+  app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents, policies));
   app.use("/api/v1/agents", runtimeIdentityRoutes(agents, receivers));
   app.get("/health", async (_req, res) => {
     await service.db.query("SELECT 1");
@@ -307,6 +312,7 @@ export function createApplication(
     app,
     server,
     receivers,
+    policies,
     listen: async (port = 3000, host = "127.0.0.1") => {
       await receivers.cleanup();
       return new Promise<import("node:net").AddressInfo>((resolve, reject) => {

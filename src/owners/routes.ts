@@ -2,11 +2,12 @@ import { Router, type Request, type Response } from 'express';
 import type { OwnerService } from './service.js';
 import { LOGIN_MS } from './service.js';
 import type { IdentityProvider, LoginScreen } from './provider.js';
+import type { AgentPolicyService } from '../agents/policies.js';
 import type { AgentIdentityService } from '../agents/identity.js';
 import { ownerAgentRoutes } from '../agents/routes.js';
 import { HttpError, requireThat } from '../validation.js';
 
-export function ownerRoutes(service: OwnerService, provider: IdentityProvider | undefined, origin: string, agents?: AgentIdentityService) {
+export function ownerRoutes(service: OwnerService, provider: IdentityProvider | undefined, origin: string, agents?: AgentIdentityService, policies?: AgentPolicyService) {
   const router = Router();
   const secure = new URL(origin).protocol === 'https:';
   const sessionName = secure ? '__Host-rv-owner' : 'rv-owner';
@@ -83,7 +84,7 @@ export function ownerRoutes(service: OwnerService, provider: IdentityProvider | 
     }
     res.locals.ownerId = owner.id;
     next();
-  }, ownerAgentRoutes(agents));
+  }, ownerAgentRoutes(agents, policies));
   // Foundation for future management routes: always authenticate before serving data,
   // constrain SQL by owner.id, and require same-origin + CSRF for every write.
   return router;
