@@ -1,3 +1,4 @@
+import type { AgentPolicyService } from './policies.js';
 import { Router } from 'express';
 import { receiverReference, type ReceiverService } from './receivers.js';
 import { exactFields, requireThat } from '../validation.js';
@@ -5,7 +6,7 @@ import { AGENT_FRIENDS_PROTOCOL as protocol } from './protocol.js';
 import { type AgentIdentityService, identityPage } from './identity.js';
 
 /** Mounted only behind the owner's session and write/CSRF guards. */
-export function ownerAgentRoutes(service: AgentIdentityService) {
+export function ownerAgentRoutes(service: AgentIdentityService, policies?: AgentPolicyService) {
   const router = Router();
   router.get('/', async (req, res) => res.json({ protocol, ...await service.list(res.locals.ownerId, identityPage(req.query)) }));
   router.post('/', async (req, res) => res.status(201).json({ protocol, agent: await service.create(res.locals.ownerId, req.body) }));
@@ -28,6 +29,21 @@ export function ownerAgentRoutes(service: AgentIdentityService) {
     exactFields(req.body ?? {}, []);
     res.json({ protocol, credential: await service.revokeKey(res.locals.ownerId, req.params.id, req.params.credentialId) });
   });
+  if (policies) {
+    router.get('/:id/peers', async (req, res) => res.json({ protocol, ...await policies.list(res.locals.ownerId, req.params.id, identityPage(req.query)) }));
+    router.get('/:id/peers/:peerId', async (req, res) => {
+      exactFields(req.query, []);
+      res.json({ protocol, policy: await policies.get(res.locals.ownerId, req.params.id, req.params.peerId) });
+    });
+    router.put('/:id/peers/:peerId', async (req, res) => {
+      exactFields(req.query, []);
+      res.json({ protocol, policy: await policies.put(res.locals.ownerId, req.params.id, req.params.peerId, req.body) });
+    });
+    router.delete('/:id/peers/:peerId', async (req, res) => {
+      exactFields(req.query, []); exactFields(req.body ?? {}, []);
+      res.json({ protocol, ...await policies.delete(res.locals.ownerId, req.params.id, req.params.peerId) });
+    });
+  }
   return router;
 }
 export function runtimeIdentityRoutes(service: AgentIdentityService, receivers: ReceiverService) {

@@ -1,8 +1,8 @@
 # Agent Friends HTTP V1 — session contract (REN-5)
 
 Status: initial implementation contract, revised September 21, 2026. Owner accounts, identity/key
-management and receiver endpoints are implemented; see [identity API](agent-identities.md)
-and [listener API](agent-receivers.md). Session admission/messaging endpoints remain
+management, directional policy management and receiver endpoints are implemented; see [identity API](agent-identities.md),
+[policy API](agent-policies.md) and [listener API](agent-receivers.md). Session admission/messaging endpoints remain
 planned for REN-10. This replaces the earlier standalone request/result draft.
 The implemented room API in `protocol.md` remains compatible.
 
@@ -336,7 +336,7 @@ and exact output routing even while advanced context/memory work is deferred.
 ## Implementation and verification map
 
 REN-6/7 implement owner accounts and identities. REN-8 implements listener leases,
-the offer inbox and shared session/binding storage; REN-10 creates the offers. REN-9 enforces directional policies. REN-10 extends the existing
+the offer inbox and shared session/binding storage; REN-10 creates the offers. REN-9 implements directional policy management, a transactional permission guard and revocation closure. REN-10 extends the existing
 room/session/message foundation with admission, bindings, closure and deduplication.
 REN-11 enforces session/message quotas and cleanup-aware capacity. REN-12 provides
 a harness-independent session client; REN-13 adds named local profiles and CLI

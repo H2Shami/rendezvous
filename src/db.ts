@@ -84,6 +84,7 @@ export async function openDatabase({
       await tx.exec(await readFile(new URL("../migrations/008_workos_auth.sql", import.meta.url), "utf8"));
       await tx.exec(await readFile(new URL("../migrations/009_agent_identities.sql", import.meta.url), "utf8"));
       await tx.exec(await readFile(new URL("../migrations/010_agent_receivers.sql", import.meta.url), "utf8"));
+      await tx.exec(await readFile(new URL("../migrations/011_agent_peer_policies.sql", import.meta.url), "utf8"));
     });
   } catch (error) {
     await db.close();

@@ -1,4 +1,4 @@
-/** Agent Friends wire contract. Identity and receiver endpoints are implemented; session admission/routing follows.
+/** Agent Friends wire contract. Identity, policy and receiver endpoints are implemented; session admission/routing follows.
  * See docs/agent-friends-protocol.md. Keep independent of DB, CLI and server. */
 export const AGENT_FRIENDS_PROTOCOL = "agent-friends-http-v1" as const;
 export type UUID = string;
@@ -112,3 +112,12 @@ export interface ProtocolErrorResponse extends ProtocolEnvelope {
   /** HTTP trace ID, not a session ID. */
   request_id: UUID;
 }
+
+/** Directional owner-managed grants. An absent policy denies both directions. */
+export interface PeerPolicyInput { allow_inbound: boolean; allow_outbound: boolean }
+export interface PeerPolicy extends PeerPolicyInput {
+  agent_id: UUID; peer_agent_id: UUID; created_at: Timestamp; updated_at: Timestamp;
+}
+export interface PeerPolicyResponse extends ProtocolEnvelope { policy: PeerPolicy }
+export interface PeerPolicyListResponse extends ProtocolEnvelope { policies: PeerPolicy[]; next_cursor: UUID | null }
+export interface DeletePeerPolicyResponse extends ProtocolEnvelope { deleted: true }
