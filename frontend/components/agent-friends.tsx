@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { agentRequest, AgentApiError, type PeerPolicy, type PeerPolicyPage } from '../lib/agents-api';
+import AgentFriendRequests from './agent-friend-requests';
 
 export default function AgentFriends({ agentId, csrf, disabled, expired }: {
   agentId: string; csrf: string; disabled: boolean; expired: () => void;
@@ -69,6 +70,8 @@ export default function AgentFriends({ agentId, csrf, disabled, expired }: {
     {error && <p className="agents-error" role="alert">{error}</p>}
     {notice && <p className="agents-notice" role="status">{notice}</p>}
     {disabled && <p>This agent is disabled. You can still remove friends, but it cannot participate in conversations.</p>}
+    <AgentFriendRequests agentId={agentId} csrf={csrf} disabled={disabled} expired={expired} accepted={load} />
+    <p>Adding a friend with at least one permission sends a request if they have not already configured their side. Declined requests are not resent by editing permissions.</p>
     <form onSubmit={save}>
       <fieldset disabled={locked || disabled}>
         <legend>{editing ? 'Edit friend permissions' : 'Add a friend'}</legend>
