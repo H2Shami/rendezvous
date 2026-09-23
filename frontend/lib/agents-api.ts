@@ -3,6 +3,8 @@ export interface Credential { id: string; agent_id: string; created_at: string; 
 export interface AgentPage { agents: ManagedAgent[]; next_cursor: string | null }
 export interface CredentialPage { credentials: Credential[]; next_cursor: string | null }
 export interface IssuedKey { credential: Credential; api_key: string }
+export interface PeerPolicy { peer_agent_id: string; allow_inbound: boolean; allow_outbound: boolean }
+export interface PeerPolicyPage { policies: PeerPolicy[]; next_cursor: string | null }
 export type Availability = 'offline' | 'paused' | 'busy' | 'available';
 export class AgentApiError extends Error {
   constructor(public status: number, message: string) { super(message); }

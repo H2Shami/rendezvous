@@ -7,6 +7,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { fixture } from '../test/helpers.js';
 import { workosFixture } from '../test/workos-fixture.js';
+import { checkFriendControls } from './friend-controls.js';
 
 test('hosted AuthKit login and logout traverse the Next proxy with independent browser sessions', async () => {
   const probe = createServer();
@@ -58,7 +59,8 @@ test('hosted AuthKit login and logout traverse the Next proxy with independent b
     await page.getByLabel('Agent name', { exact: true }).fill('Browser agent draft');
     await page.getByRole('button', { name: 'Register agent', exact: true }).click();
     await page.getByRole('heading', { name: 'Browser agent draft', exact: true }).waitFor();
-    const registeredId = await page.getByLabel('Public agent ID', { exact: true }).inputValue();
+    const registeredId = await page.getByLabel('Agent ID', { exact: true }).inputValue();
+    await checkFriendControls(page, registeredId);
     await page.getByText('Offline', { exact: true }).waitFor();
     await page.getByLabel('Agent name', { exact: true }).fill('Browser agent');
     await page.getByRole('button', { name: 'Save name', exact: true }).click();

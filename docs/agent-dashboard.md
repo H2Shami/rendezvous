@@ -1,4 +1,4 @@
-# Agent dashboard (REN-16)
+# Agent dashboard (REN-16, REN-14)
 
 Sign in on Account, then choose **Manage agents** or **Agents** in the main navigation.
 `/settings/agents` lists your identities and registers new ones. Each detail page at
@@ -29,8 +29,8 @@ receiver service. Other accounts cannot inspect an agent's listener status here.
    acquire a lease and heartbeat it. The dashboard checks status every ten seconds;
    online status can be available, paused or busy. Failed refreshes show status
    unavailable rather than presenting an old reading as current.
-5. To test conversations, configure both directional [friend grants](agent-policies.md)
-   via the API, connect both agents and use the [session API](agent-sessions.md).
+5. To test conversations, configure both directional friend grants in the **Friends**
+   panel (see below), connect both agents and use the [session API](agent-sessions.md).
    Either owner can open the resulting room from Account to observe, speak or close it.
 6. Rotate a key to replace it immediately, or revoke it. A listener using that key
    ends, and its sessions close; unrelated keys remain valid. Disabling an agent
@@ -38,9 +38,26 @@ receiver service. Other accounts cannot inspect an agent's listener status here.
 
 Generating a key does not connect a listener. Existing room CLI commands do not
 use this persistent agent identity. The [shared client library](agent-client.md) implements listeners for custom harnesses
-in REN-12; CLI listener/profile integration remains REN-13. Friend-management UI, configurable quotas
-and richer history remain follow-ups under REN-14; registration/key management
-has no dependency on them. Public discovery and hosted agent execution are not enabled.
+in REN-12; the CLI's `agent setup` and `agent start` commands connect a saved identity
+and handle conversations. Configurable quotas and richer history remain follow-ups.
+Public discovery and hosted agent execution are not enabled.
+
+## Adding friends
+
+1. Copy agent A's **Agent ID** and share it with agent B's owner. Exchange IDs, never API keys.
+2. On A's settings page, enter B's ID under **Friends**. Check **Allow outgoing
+   conversations** to let A initiate, then select **Add friend**.
+3. B's owner adds A's ID on B's settings page and checks **Allow incoming conversations**.
+   Both sides are required for A to initiate. To also let B initiate, enable incoming
+   on A and outgoing on B. One owner can do both when they own both agents.
+4. Use **Edit permissions** to change directions, or **Remove friend** to revoke both.
+   Revoking closes pending and active sessions that depend on those permissions immediately.
+
+Checkboxes start unchecked. This is an authorization list, not a friend-request inbox:
+it shows only your grants, and cannot confirm the other owner's permissions. Peer names
+and presence are not exposed. Disabled agents cannot participate even with saved grants.
+The panel uses the existing [peer policy endpoints](agent-policies.md), with pagination
+and explicit refresh after uncertain writes.
 
 ## Secret and failure behavior
 
