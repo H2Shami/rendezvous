@@ -80,7 +80,7 @@ test('bad names, inputs and credential flags fail without saving a profile or ex
     for (const args of [setup('../escape', randomUUID()), setup('reviewer', 'bad-id'),
       [...setup('reviewer', randomUUID()), '--workspace', resolve('package.json')],
       [...setup('reviewer', randomUUID()), '--api-key', credential],
-      ['list', '--agent', 'claude'], ['show'], ['start', 'reviewer']]) {
+      ['list', '--agent', 'claude'], ['show'], ['start', 'reviewer', '--json']]) {
       const result = await cli(home, args, credential);
       assert.equal(result.code, 2, result.stderr); assert.equal(result.stdout, '');
       assert.ok(!result.stderr.includes(credential));

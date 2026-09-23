@@ -11,6 +11,8 @@
   },
   "files": [
     "dist/cli/*.js",
+    "dist/client/*.js",
+    "dist/agents/protocol.js",
     "docs/cli.md",
     "README.md"
   ],

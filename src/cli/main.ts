@@ -35,6 +35,8 @@ import {
 import { Prompts, UsageError } from "./prompts.js";
 import { help } from "./help.js";
 import { createProfile, listProfiles, profileName, readProfile } from './profiles.js';
+import { agentErrorMessage, agentStatus, startAgent } from './agent-listener.js';
+import { AgentClientError } from '../client/index.js';
 
 export const DEFAULT_SERVER = "https://dev.userendezvous.com";
 const invocation =
@@ -126,6 +128,7 @@ async function main() {
         join: { type: "boolean" },
         agent: { type: "string" },
         "agent-id": { type: "string" },
+        takeover: { type: "boolean" },
         session: { type: "string" },
         task: { type: "string" },
         "objective-file": { type: "string" },
@@ -178,7 +181,7 @@ async function main() {
     rooms: ["json"],
     owner: ["room-file", "json"],
     config: ["json", "no-input"],
-    agent: ["agent-id", "agent", "server", "workspace", "task", "objective-file", "json", "no-input"],
+    agent: ["agent-id", "agent", "server", "workspace", "task", "objective-file", "json", "no-input", "takeover"],
   };
   if (!allowed[command])
     throw new UsageError(
@@ -228,16 +231,29 @@ async function main() {
   try {
     if (command === 'agent') {
       const [action, name] = rest;
-      if (!['setup', 'list', 'show'].includes(action) || rest.length !== (action === 'list' ? 1 : 2))
-        throw new UsageError('Use agent setup NAME, agent list, or agent show NAME.');
-      if (action !== 'setup' && Object.keys(v).some(key => key !== 'json' && key !== 'no-input'))
-        throw new UsageError('Only --json and --no-input are supported when inspecting profiles.');
+      const actionFlags: Record<string, string[]> = {
+        setup: ['agent-id', 'agent', 'server', 'workspace', 'task', 'objective-file', 'json', 'no-input'],
+        list: ['json', 'no-input'], show: ['json', 'no-input'], status: ['json', 'no-input'], start: ['takeover', 'no-input'],
+      };
+      if (!actionFlags[action] || rest.length !== (action === 'list' ? 1 : 2))
+        throw new UsageError('Use agent setup NAME, agent list, agent show NAME, agent status NAME, or agent start NAME.');
+      if (Object.keys(v).some(key => !actionFlags[action].includes(key)))
+        throw new UsageError(`Unsupported option for agent ${action}. See agent --help.`);
       if (action === 'list') {
         const profiles = await listProfiles();
         console.log(v.json ? JSON.stringify(profiles, null, 2) : profiles.map(p => `${p.name}: ${p.agent} · ${p.agentId} · ${p.origin}`).join('\n') || 'No saved agent profiles. Use agent setup NAME.');
         return;
       }
       profileName(name);
+      if (action === 'start') {
+        await startAgent(name, { takeover: v.takeover, signal: controller.signal, log });
+        return;
+      }
+      if (action === 'status') {
+        const status = await agentStatus(name, controller.signal);
+        console.log(v.json ? JSON.stringify(status, null, 2) : `${name}: ${status.availability}`);
+        return;
+      }
       if (action === 'show') {
         const profile = await readProfile(name);
         console.log(v.json ? JSON.stringify(profile, null, 2) : `Profile: ${profile.name}\nAgent ID: ${profile.agentId}\nServer: ${profile.origin}\nHarness: ${profile.agent}\nWorkspace: ${profile.workspace}\nInstructions: ${profile.instructions}`);
@@ -660,6 +676,7 @@ async function main() {
       await release?.();
     }
   } catch (error) {
+    if (command === 'agent') throw error;
     if (!controller.signal.aborted) throw error;
     log("Disconnected. Saved room and conversation can be resumed.");
   } finally {
@@ -678,7 +695,9 @@ main().catch((error) => {
   }
   const code = (error as NodeJS.ErrnoException).code;
   const message =
-    code === "EEXIST"
+    error instanceof AgentClientError
+      ? agentErrorMessage(error)
+      : code === "EEXIST"
       ? "Output file already exists. Choose a new --output path."
       : code === "ELOCKED"
         ? "This room or agent session is already in use by another listener. Stop it before resuming."
