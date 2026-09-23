@@ -64,7 +64,26 @@ export class AgentPolicyService {
     }
     return sessions.rows.map(s => s.id);
   }
-  async put(owner: string, id: string, peer: string, body: unknown) {
+  async incoming(owner: string, id: string, page: IdentityPage) {
+    id = agentId(id); await this.owned(this.db, owner, id);
+    const rows = (await this.db.query<{ sender_agent_id: string; created_at: Date }>(`SELECT r.sender_agent_id,r.created_at
+      FROM agent_friend_requests r JOIN agents a ON a.id=r.sender_agent_id JOIN owners o ON o.id=a.owner_id
+      WHERE r.recipient_agent_id=$1 AND r.status='pending' AND a.disabled_at IS NULL AND o.disabled_at IS NULL
+      AND ($2::uuid IS NULL OR r.sender_agent_id>$2) ORDER BY r.sender_agent_id LIMIT $3`,
+    [id, page.after ?? null, page.limit + 1])).rows;
+    return { requests: rows.slice(0, page.limit), next_cursor: rows.length > page.limit ? rows[page.limit - 1].sender_agent_id : null };
+  }
+  async decline(owner: string, id: string, peer: string) {
+    [id, peer] = this.pair(id, peer);
+    await this.db.transaction(async tx => {
+      await this.owned(tx, owner, id); await this.lockPair(tx, id, peer);
+      await this.owned(tx, owner, id);
+      await tx.query(`UPDATE agent_friend_requests SET status='declined',updated_at=$3
+        WHERE sender_agent_id=$2 AND recipient_agent_id=$1 AND status='pending'`, [id, peer, new Date(this.clock())]);
+    });
+    return { declined: true as const };
+  }
+  async put(owner: string, id: string, peer: string, body: unknown, acceptRequest = false) {
     [id, peer] = this.pair(id, peer);
     exactFields(body, ['allow_inbound', 'allow_outbound']);
     requireThat(typeof body.allow_inbound === 'boolean' && typeof body.allow_outbound === 'boolean',
@@ -73,12 +92,36 @@ export class AgentPolicyService {
     const result = await this.db.transaction(async tx => {
       await this.owned(tx, owner, id);
       await this.lockPair(tx, id, peer); await this.owned(tx, owner, id);
+      if (acceptRequest) {
+        const pending = await one(tx, `SELECT r.sender_agent_id FROM agent_friend_requests r
+          JOIN agents a ON a.id=r.sender_agent_id JOIN owners o ON o.id=a.owner_id
+          JOIN agents b ON b.id=r.recipient_agent_id
+          WHERE r.sender_agent_id=$2 AND r.recipient_agent_id=$1 AND r.status='pending'
+          AND a.disabled_at IS NULL AND b.disabled_at IS NULL AND o.disabled_at IS NULL`, [id, peer]);
+        requireThat(pending, 'INVALID_REQUEST', 'Friend request is no longer available. Refresh requests.', 409);
+        requireThat(inbound || outbound, 'INVALID_REQUEST', 'Choose at least one permission to accept.');
+      }
       // No public peer profile or presence is returned by policy management.
       const exists = await one(tx, 'SELECT id FROM agents WHERE id=$1', [peer]);
       if (!exists) denied();
       const policy = (await one<PeerPolicyRecord>(tx, `INSERT INTO agent_peer_policies(agent_id,peer_agent_id,allow_inbound,allow_outbound,created_at,updated_at)
         VALUES($1,$2,$3,$4,$5,$5) ON CONFLICT(agent_id,peer_agent_id) DO UPDATE SET allow_inbound=$3,allow_outbound=$4,updated_at=$5 RETURNING ${columns}`,
         [id, peer, inbound, outbound, new Date(this.clock())]))!;
+      const now = new Date(this.clock());
+      // Saving the recipient's own permissions also resolves an incoming request.
+      await tx.query(`UPDATE agent_friend_requests SET status=$3,updated_at=$4
+        WHERE sender_agent_id=$2 AND recipient_agent_id=$1 AND status='pending'`,
+      [id, peer, inbound || outbound ? 'accepted' : 'declined', now]);
+      if (inbound || outbound) {
+        await tx.query(`INSERT INTO agent_friend_requests(sender_agent_id,recipient_agent_id,status,created_at,updated_at)
+          SELECT $1,$2,'pending',$3,$3 WHERE NOT EXISTS (
+            SELECT 1 FROM agent_peer_policies WHERE agent_id=$2 AND peer_agent_id=$1)
+          ON CONFLICT(sender_agent_id,recipient_agent_id) DO UPDATE SET status='pending',created_at=$3,updated_at=$3
+          WHERE agent_friend_requests.status='withdrawn'`, [id, peer, now]);
+      } else {
+        await tx.query(`UPDATE agent_friend_requests SET status='withdrawn',updated_at=$3
+          WHERE sender_agent_id=$1 AND recipient_agent_id=$2 AND status='pending'`, [id, peer, now]);
+      }
       return { policy, sessions: await this.closeDenied(tx, id, peer, inbound, outbound) };
     });
     this.notify(result.sessions); return result.policy;
@@ -89,6 +132,8 @@ export class AgentPolicyService {
       await this.owned(tx, owner, id);
       await this.lockPair(tx, id, peer); await this.owned(tx, owner, id);
       await tx.query('DELETE FROM agent_peer_policies WHERE agent_id=$1 AND peer_agent_id=$2', [id, peer]);
+      await tx.query(`UPDATE agent_friend_requests SET status='withdrawn',updated_at=$3
+        WHERE sender_agent_id=$1 AND recipient_agent_id=$2 AND status='pending'`, [id, peer, new Date(this.clock())]);
       return this.closeDenied(tx, id, peer, false, false);
     });
     this.notify(sessions); return { deleted: true as const };

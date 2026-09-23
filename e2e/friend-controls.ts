@@ -26,6 +26,22 @@ export async function checkFriendControls(page: Page, agentId: string) {
     return { policy: own.policy, reverse: reverse.status };
   }, { agentId, peerId });
   assert.equal((await read()).reverse, 404);
+  await page.goto(new URL(`/settings/agents/${peerId}`, page.url()).href);
+  const inbox = page.getByRole('region', { name: 'Incoming friend requests', exact: true });
+  await expect(inbox.locator('li')).toContainText(agentId);
+  await inbox.getByRole('button', { name: 'Review request', exact: true }).click();
+  await expect(inbox.getByRole('button', { name: 'Accept and save permissions', exact: true })).toBeDisabled();
+  await inbox.getByLabel('Allow incoming conversations', { exact: false }).check();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await inbox.screenshot({ path: '/tmp/rendezvous-incoming-requests.png' });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await inbox.getByRole('button', { name: 'Accept and save permissions', exact: true }).click();
+  await expect(inbox.locator('li')).toHaveCount(0);
+  await expect(panel.locator('li')).toContainText('Incoming: Allowed by you · Outgoing: Not allowed');
+  await page.reload();
+  await inbox.getByText('No incoming friend requests.', { exact: true }).waitFor();
+  await page.goto(new URL(`/settings/agents/${agentId}`, page.url()).href);
   await page.reload();
   await expect(panel.locator('li')).toContainText(peerId);
   await panel.getByRole('button', { name: 'Edit permissions', exact: true }).click();
@@ -62,5 +78,21 @@ export async function checkFriendControls(page: Page, agentId: string) {
   await panel.getByRole('button', { name: 'Remove friend', exact: true }).click();
   await expect(panel.locator('li')).toHaveCount(0);
   await page.reload();
+  await panel.getByText('No friends yet.', { exact: false }).waitFor();
+  // A different sender's request can be declined without creating local permissions.
+  const sender = await page.evaluate(async agentId => {
+    const { csrf_token } = await (await fetch('/api/v1/owner/me')).json();
+    const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf_token };
+    const { agent } = await (await fetch('/api/v1/owner/agents', { method: 'POST', headers, body: JSON.stringify({ display_name: 'Declined peer' }) })).json();
+    const response = await fetch(`/api/v1/owner/agents/${agent.id}/peers/${agentId}`, { method: 'PUT', headers, body: JSON.stringify({ allow_inbound: false, allow_outbound: true }) });
+    if (!response.ok) throw new Error('Request setup failed');
+    return agent.id as string;
+  }, agentId);
+  await inbox.getByRole('button', { name: 'Refresh requests', exact: true }).click();
+  await expect(inbox.locator('li')).toContainText(sender);
+  await inbox.getByRole('button', { name: 'Decline request', exact: true }).click();
+  await expect(inbox.locator('li')).toHaveCount(0);
+  await page.reload();
+  await inbox.getByText('No incoming friend requests.', { exact: true }).waitFor();
   await panel.getByText('No friends yet.', { exact: false }).waitFor();
 }

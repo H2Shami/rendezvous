@@ -204,3 +204,83 @@ test('concurrent grant updates use ordered locks, and revocation serializes with
     assert.equal((await f.db.query<{ state: string }>('SELECT state FROM agent_sessions WHERE id=$1', [pending])).rows[0].state, 'closed');
   } finally { await f.stop(); }
 });
+
+test('incoming requests are owner-scoped, accept only chosen permissions, and stay declined', async () => {
+  const f = await setup();
+  try {
+    const root = `owner/agents/${f.b.id}/friend-requests`;
+    await f.grant(f.a, f.b, false, true);
+    assert.equal((await f.call(root)).status, 404);
+    const incoming = await f.call(root, 'GET', undefined, 'b');
+    assert.equal(incoming.body.requests[0].sender_agent_id, f.a.id);
+    assert.doesNotMatch(JSON.stringify(incoming.body), /owner_id|display_name|api_key|allow_inbound/);
+    await assert.rejects(f.allowed(), { code: 'ACCESS_DENIED' });
+    const path = `${root}/${f.a.id}/accept`, body = { allow_inbound: true, allow_outbound: false };
+    assert.equal((await f.call(path, 'POST', body)).status, 404);
+    assert.equal((await f.call(path, 'POST', body, 'b', { 'X-CSRF-Token': '' })).status, 403);
+    assert.equal((await f.call(path, 'POST', { allow_inbound: false, allow_outbound: false }, 'b')).status, 400);
+    assert.equal((await f.call(path, 'POST', body, 'b')).status, 200);
+    await f.allowed();
+    await assert.rejects(f.allowed(f.b, f.a), { code: 'ACCESS_DENIED' });
+    assert.equal((await f.call(root, 'GET', undefined, 'b')).body.requests.length, 0);
+    // A replay cannot broaden a decision already made.
+    assert.equal((await f.call(path, 'POST', { ...body, allow_outbound: true }, 'b')).status, 409);
+    assert.equal((await f.policies.get(f.ob.id, f.b.id, f.a.id)).allow_outbound, false);
+    await f.grant(f.c, f.b);
+    const decline = `${root}/${f.c.id}/decline`;
+    assert.equal((await f.call(decline, 'POST', {}, 'b', { 'X-CSRF-Token': '' })).status, 403);
+    assert.equal((await f.call(decline, 'POST', {}, 'b')).status, 200);
+    await f.policies.delete(f.oa.id, f.c.id, f.b.id);
+    await f.grant(f.c, f.b);
+    assert.equal((await f.call(root, 'GET', undefined, 'b')).body.requests.length, 0);
+    await assert.rejects(f.policies.get(f.ob.id, f.b.id, f.c.id), { code: 'NOT_FOUND' });
+  } finally { await f.stop(); }
+});
+
+test('incoming requests paginate, withdraw, and reject stale or disabled acceptance', async () => {
+  const f = await setup();
+  try {
+    await f.grant(f.a, f.b); await f.grant(f.c, f.b);
+    const first = await f.policies.incoming(f.ob.id, f.b.id, { limit: 1 });
+    const second = await f.policies.incoming(f.ob.id, f.b.id, { limit: 1, after: first.next_cursor! });
+    assert.deepEqual(new Set([first.requests[0].sender_agent_id, second.requests[0].sender_agent_id]), new Set([f.a.id, f.c.id]));
+    assert.equal(second.next_cursor, null);
+    await f.policies.delete(f.oa.id, f.a.id, f.b.id);
+    await assert.rejects(f.policies.put(f.ob.id, f.b.id, f.a.id, { allow_inbound: true, allow_outbound: false }, true), { status: 409 });
+    await f.grant(f.a, f.b); // A withdrawn request may be sent again; a declined one may not.
+    await f.agents.disable(f.oa.id, f.a.id);
+    assert.equal((await f.policies.incoming(f.ob.id, f.b.id, { limit: 50 })).requests.length, 1);
+    await assert.rejects(f.policies.put(f.ob.id, f.b.id, f.a.id, { allow_inbound: true, allow_outbound: false }, true), { status: 409 });
+    await f.grant(f.c, f.b, false, false);
+    assert.equal((await f.policies.incoming(f.ob.id, f.b.id, { limit: 50 })).requests.length, 0);
+  } finally { await f.stop(); }
+});
+
+test('friend request migration surfaces old unilateral grants without changing permissions', async () => {
+  const f = await setup();
+  try {
+    await f.grant(f.a, f.b); await f.grant(f.c, f.b, false, false);
+    await f.grant(f.a, f.c); await f.grant(f.c, f.a);
+    const before = (await f.db.query('SELECT * FROM agent_peer_policies ORDER BY agent_id,peer_agent_id')).rows;
+    await f.db.exec('DROP TABLE agent_friend_requests');
+    await f.db.exec(await readFile(new URL('../migrations/015_agent_friend_requests.sql', import.meta.url), 'utf8'));
+    assert.deepEqual((await f.policies.incoming(f.ob.id, f.b.id, { limit: 50 })).requests.map(r => r.sender_agent_id), [f.a.id]);
+    assert.deepEqual((await f.db.query('SELECT * FROM agent_peer_policies ORDER BY agent_id,peer_agent_id')).rows, before);
+  } finally { await f.stop(); }
+});
+
+test('acceptance rolls back permissions when request resolution fails', async () => {
+  const f = await setup();
+  try {
+    await f.grant(f.a, f.b);
+    const failing = new AgentPolicyService({ ...f.db, transaction: fn => f.db.transaction(tx => fn({
+      exec: sql => tx.exec(sql), query: async <T>(sql: string, args?: unknown[]) => {
+        if (sql.startsWith('UPDATE agent_friend_requests')) throw new Error('injected failure');
+        return tx.query<T>(sql, args);
+      },
+    })) }, f.now);
+    await assert.rejects(failing.put(f.ob.id, f.b.id, f.a.id, { allow_inbound: true, allow_outbound: false }, true), /injected failure/);
+    assert.equal((await f.policies.incoming(f.ob.id, f.b.id, { limit: 50 })).requests.length, 1);
+    await assert.rejects(f.policies.get(f.ob.id, f.b.id, f.a.id), { code: 'NOT_FOUND' });
+  } finally { await f.stop(); }
+});

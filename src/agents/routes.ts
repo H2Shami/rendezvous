@@ -35,6 +35,16 @@ export function ownerAgentRoutes(service: AgentIdentityService, policies?: Agent
     res.json({ protocol, credential: await service.revokeKey(res.locals.ownerId, req.params.id, req.params.credentialId) });
   });
   if (policies) {
+    router.get('/:id/friend-requests', async (req, res) => res.json({ protocol,
+      ...await policies.incoming(res.locals.ownerId, req.params.id, identityPage(req.query)) }));
+    router.post('/:id/friend-requests/:peerId/accept', async (req, res) => {
+      exactFields(req.query, []);
+      res.json({ protocol, policy: await policies.put(res.locals.ownerId, req.params.id, req.params.peerId, req.body, true) });
+    });
+    router.post('/:id/friend-requests/:peerId/decline', async (req, res) => {
+      exactFields(req.query, []); exactFields(req.body ?? {}, []);
+      res.json({ protocol, ...await policies.decline(res.locals.ownerId, req.params.id, req.params.peerId) });
+    });
     router.get('/:id/peers', async (req, res) => res.json({ protocol, ...await policies.list(res.locals.ownerId, req.params.id, identityPage(req.query)) }));
     router.get('/:id/peers/:peerId', async (req, res) => {
       exactFields(req.query, []);

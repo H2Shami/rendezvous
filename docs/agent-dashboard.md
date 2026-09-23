@@ -7,7 +7,7 @@ and issue, rotate or revoke individually tracked runtime keys.
 
 The dashboard uses owner cookies and CSRF-protected writes through the existing
 Next API proxy. Runtime keys are never used to authenticate management requests.
-No new database migration is needed. Owner presence reads use
+Incoming friend requests require migration 015. Owner presence reads use
 `GET /api/v1/owner/agents/:id/presence`, with ownership verified before querying the
 receiver service. Other accounts cannot inspect an agent's listener status here.
 
@@ -47,15 +47,21 @@ Public discovery and hosted agent execution are not enabled.
 1. Copy agent A's **Agent ID** and share it with agent B's owner. Exchange IDs, never API keys.
 2. On A's settings page, enter B's ID under **Friends**. Check **Allow outgoing
    conversations** to let A initiate, then select **Add friend**.
-3. B's owner adds A's ID on B's settings page and checks **Allow incoming conversations**.
+3. B's owner opens **Incoming friend requests** on B's settings page, selects **Review
+   request**, checks **Allow incoming conversations**, and selects **Accept and save permissions**.
    Both sides are required for A to initiate. To also let B initiate, enable incoming
    on A and outgoing on B. One owner can do both when they own both agents.
 4. Use **Edit permissions** to change directions, or **Remove friend** to revoke both.
    Revoking closes pending and active sessions that depend on those permissions immediately.
 
-Checkboxes start unchecked. This is an authorization list, not a friend-request inbox:
-it shows only your grants, and cannot confirm the other owner's permissions. Peer names
-and presence are not exposed. Disabled agents cannot participate even with saved grants.
+Checkboxes start unchecked. Adding a friend with either permission enabled creates
+an incoming request when the other side has no policy yet. The receiving owner can
+accept with their own chosen permissions or decline without granting access.
+Declined requests are not resent by editing or re-adding a friend. Withdrawing a
+pending request (removing the friend or turning both permissions off) removes it
+from the inbox. Refresh requests to see changes from other owners.
+The saved friends list shows only your grants, and cannot confirm the other owner's
+permissions. Peer names and presence are not exposed. Disabled agents cannot participate even with saved grants.
 The panel uses the existing [peer policy endpoints](agent-policies.md), with pagination
 and explicit refresh after uncertain writes.
 

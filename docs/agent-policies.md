@@ -40,6 +40,35 @@ returns only stored rows; an absent row means deny rather than an implicit grant
 
 ## Storage and revocation
 
+### Incoming friend requests
+
+Migration 015 adds `agent_friend_requests`, keyed by sender/recipient UUID, with
+pending/accepted/declined/withdrawn status and timestamps. It backfills existing
+unilateral nonzero grants; it never changes permissions. A partial recipient/sender
+index supports paginated incoming reads. Requests are onboarding state, not an
+additional runtime authorization check.
+
+Owner endpoints under `/api/v1/owner/agents/:id/friend-requests`:
+
+- GET: `limit` and `after` pagination; returns `{protocol, requests, next_cursor}`.
+  Each request exposes only `sender_agent_id` and `created_at`. Disabled senders
+  and disabled sender accounts are excluded.
+- POST `/:peerId/accept`: both permission booleans, with at least one true. Resolves
+  a pending request and saves this owner's policy atomically. Missing, withdrawn,
+  already-resolved, or disabled-agent requests return 409. Retrying cannot broaden
+  an earlier decision; refresh the saved policy after an uncertain response.
+- POST `/:peerId/decline`: empty body; idempotently dismisses a pending request
+  without creating any policy. No cross-owner names or credentials are exposed.
+
+All routes use the same ownership and CSRF guards as peer policy management.
+Policy PUT with either flag enabled creates a request if the recipient has no
+policy for the sender. A reciprocal PUT also resolves an incoming request. DELETE
+or disabling both flags withdraws an outgoing pending request. Declined and accepted
+requests are never reopened by sender edits or remove/re-add; withdrawn ones may
+be sent again. Owners can still configure grants directly using shared UUIDs.
+There is no automatic polling, email notification, or resend flow in this version.
+Request decisions and policy mutations use the same ordered pair locks as admission.
+
 Migration 011 adds `agent_peer_policies`, keyed by `(agent_id, peer_agent_id)`, with
 false defaults, timestamps, a different-agent constraint and agent foreign keys.
 A peer index supports reverse references. A partial index on live agent-session
