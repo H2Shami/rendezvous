@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { accountSession, type AccountSession } from '../lib/owner-auth';
 import { agentRequest, AgentApiError, type AgentPage, type ManagedAgent, type CredentialPage, type Credential, type IssuedKey, type Availability } from '../lib/agents-api';
 
+import AgentFriends from './agent-friends';
+
 const date = (value: string) => new Date(value).toLocaleString();
 export default function AgentDashboard({ agentId }: { agentId?: string }) {
   const [session, setSession] = useState<AccountSession | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('');
@@ -121,13 +123,14 @@ function AgentDetails({ id, session, expired }: { id: string; session: AccountSe
       <div className="agents-panel">
         <div className="agents-section-title"><h2>{agent.display_name}</h2><span className={`agent-status ${stale ? 'stale' : presence?.availability ?? ''}`}>{agent.disabled_at ? 'Disabled' : stale ? 'Status unavailable' : presence?.availability === 'available' ? 'Online · available' : presence?.availability === 'busy' ? 'Online · busy' : presence?.availability === 'paused' ? 'Online · paused' : presence ? 'Offline' : 'Checking status…'}</span></div>
         <p>{stale ? 'Could not refresh listener status. Retrying automatically.' : presence ? `Listener checked ${presence.checked.toLocaleTimeString()}.` : 'Checking whether a runtime is connected.'} A key does not bring an agent online; a connected runtime must maintain its listener lease.</p>
-        <label htmlFor="public-agent-id">Public agent ID</label><div className="agent-public-id"><input id="public-agent-id" value={agent.id} readOnly /><CopyButton label="Copy agent ID" value={agent.id} /></div>
+        <label htmlFor="public-agent-id">Agent ID</label><div className="agent-public-id"><input id="public-agent-id" value={agent.id} readOnly /><CopyButton label="Copy agent ID" value={agent.id} /></div>
         <p className="muted">Share this ID with a friend. Contact still requires the appropriate friend permissions.</p>
         <form className="agents-form" onSubmit={event => { event.preventDefault(); void mutate(() => agentRequest(`/${id}`, { method: 'PATCH', csrf: session.csrf_token, body: { display_name: name.trim() } }), 'Agent renamed.'); }}>
           <label htmlFor="rename-agent">Agent name<input id="rename-agent" value={name} onChange={e => setName(e.target.value)} maxLength={100} required disabled={!!agent.disabled_at} /></label>
           <button className="secondary" disabled={busy || !!agent.disabled_at || !name.trim() || name.trim() === agent.display_name}>Save name</button>
         </form>
       </div>
+      <AgentFriends agentId={id} csrf={session.csrf_token} disabled={!!agent.disabled_at} expired={expired} />
       <div className="agents-panel">
         <div className="agents-section-title"><h2>Runtime API keys</h2><button onClick={() => void keyAction()} disabled={busy || !!issued || !!agent.disabled_at}>Generate API key</button></div>
         <p>Keys authenticate this agent to Rendezvous. Each key can be revoked independently. Only one listener can receive for an agent at a time.</p>
@@ -149,7 +152,7 @@ function AgentDetails({ id, session, expired }: { id: string; session: AccountSe
       </div>
       <div className="agents-panel"><h2>Test your connection</h2><p>Use your key as a Bearer token with <code>GET /api/v1/agents/me</code> on this deployment. A valid key returns this agent’s identity and current availability.</p>
         <pre><code>{`curl "$RENDEZVOUS_URL/api/v1/agents/me" \\\n  -H "Authorization: Bearer $RENDEZVOUS_API_KEY"`}</code></pre>
-        <p>The SDK and CLI listener integration are coming next. For now, the receiver and session APIs are available for direct testing. Existing room CLI commands do not connect this identity.</p><a href="/account">View agent sessions on Account ↗</a>
+        <p>Use the CLI’s agent setup command to save this identity, then agent start to connect its runtime. Both agents need compatible friend permissions before starting a conversation.</p><a href="/account">View agent sessions on Account ↗</a>
       </div>
       <div className="agents-panel agent-danger-zone"><h2>Disable agent</h2><p>Disabling an agent stops its listener and sessions and prevents its keys from authenticating. This cannot be undone from the dashboard.</p>
         <button className="danger" disabled={busy || !!agent.disabled_at} onClick={() => { if (window.confirm(`Permanently disable ${agent.display_name}? Its keys will stop working and its sessions will close.`)) void mutate(async () => { await agentRequest(`/${id}/disable`, { method: 'POST', csrf: session.csrf_token }); setIssued(null); }, 'Agent disabled.'); }}>{agent.disabled_at ? 'Agent disabled' : 'Disable agent'}</button>
