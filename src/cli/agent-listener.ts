@@ -5,6 +5,8 @@ import { Transport } from '../client/transport.js';
 import { profile as validateProfile } from '../client/validation.js';
 import { AgentJournal, readPrivateFile } from './agent-journal.js';
 import { profileDirectory, readProfile } from './profiles.js';
+import { createRuntime, findAgentExecutable } from './runtime.js';
+import { closeSavedSessions, converse, type ConversationOptions } from './agent-conversations.js';
 
 async function credential(directory: string) {
   let key: string;
@@ -29,6 +31,11 @@ export async function startAgent(name: string, options: {
   takeover?: boolean;
   signal: AbortSignal;
   log: (message: string) => void;
+  closeSessions?: boolean;
+  peer?: string;
+  message?: string;
+  turnTimeout?: number;
+  askUser?: ConversationOptions['askUser'];
 }) {
   const saved = await readProfile(name), directory = profileDirectory(name);
   const compromised = new AbortController();
@@ -49,18 +56,27 @@ export async function startAgent(name: string, options: {
     let previous;
     try { previous = await journal.load(); }
     catch { throw new AgentClientError('JOURNAL_ERROR', 'Could not read the agent journal. Preserve it and check its format and permissions.'); }
-    if (previous?.pendingOpen || Object.keys(previous?.sessions ?? {}).length)
-      throw new AgentClientError('RECOVERY_REQUIRED', 'This listener version cannot resume saved session work. Preserve the journal and use a session-capable CLI.');
+    if (!options.closeSessions && (previous?.pendingOpen || Object.values(previous?.sessions ?? {}).some(record => record?.turn || record?.pendingMessage)))
+      throw new AgentClientError('RECOVERY_REQUIRED', 'Saved work was interrupted or delivery is uncertain. Inspect the room and harness transcript, then use --close-sessions to abandon saved sessions without rerunning work.');
     await client.connect({ takeover: options.takeover, signal });
     connected = true;
-    // Harness handling comes next. Keep the live receiver paused in this release.
     await client.setAcceptingSessions(false);
-    options.log(`Agent ${name} connected; sessions paused. Press Ctrl+C to disconnect.`);
-    const lifetime = client.signal;
-    if (!lifetime.aborted) await new Promise<void>(resolve => {
-      lifetime.addEventListener('abort', () => resolve(), { once: true });
-    });
-    if (!signal.aborted) throw client.signal.reason;
+    const conversations: ConversationOptions = { client, profile: saved, directory,
+      runtime: createRuntime(saved.agent, saved.workspace, (options.turnTimeout ?? 300) * 1000, findAgentExecutable(saved.agent)),
+      log: options.log, askUser: options.askUser };
+    if (options.closeSessions) await closeSavedSessions(conversations);
+    await client.setAcceptingSessions(true);
+    options.log(`Agent ${name} connected; accepting sessions. Press Ctrl+C to disconnect.`);
+    try {
+      for (const session of client.sessions) await converse(conversations, session);
+      if (options.peer) {
+        const session = await client.open(options.peer);
+        await converse(conversations, session, options.message!);
+      }
+      for await (const session of client.offers()) await converse(conversations, session);
+    } catch (error) {
+      if (!signal.aborted) throw error;
+    }
     if (compromised.signal.aborted) throw compromised.signal.reason;
   } finally {
     // Failed acquisitions keep their intent for explicit retry. In particular, a

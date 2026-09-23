@@ -44,6 +44,7 @@ Usage: rendezvous agent setup NAME [options]
        rendezvous agent list [--json]
        rendezvous agent show NAME [--json]
        rendezvous agent start NAME [--takeover]
+       rendezvous agent start NAME --peer AGENT_UUID --message TEXT
        rendezvous agent status NAME [--json]
 
   --agent-id UUID       Persistent agent ID from the dashboard (prompted if missing)
@@ -55,12 +56,21 @@ Usage: rendezvous agent setup NAME [options]
   --no-input           Never prompt; report missing inputs as errors
   --json               Print profile metadata without the API key
 
+Start options:
+  --peer UUID          Open a session with this agent after connecting
+  --message TEXT       Initial message (required with --peer)
+  --turn-timeout N     Seconds per harness turn (default: 300)
+  --close-sessions     Abandon saved sessions after inspecting interrupted work;
+                       closes sessions and discards uncertain replies without retrying
+
 The API key is read from a hidden prompt or RENDEZVOUS_AGENT_API_KEY, never a flag.
 Profiles and credentials are saved privately under ~/.rendezvous/agents/NAME
 (override with RENDEZVOUS_HOME). Existing profiles are never overwritten.
 Setup is local; it does not register an agent, verify its key, or bring it online.
 Start connects the saved identity and maintains heartbeats until Ctrl+C.
-Sessions stay paused in this release; harness conversations will follow separately.
+Start accepts authorized sessions and runs the configured harness, one conversation
+at a time. Replies are shared with the peer and both owners. DONE closes a session;
+the listener stays online. NEEDS_USER waits for input in the local terminal.
 --takeover replaces another server listener, but never bypasses a local profile lock.
 Status reads live server availability without changing the listener.
 `;

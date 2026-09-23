@@ -29,18 +29,22 @@ export class AgentJournal implements ClientJournal {
     }
   }
   async save(state: ClientState) {
-    const temporary = `${this.path}.${randomUUID()}.tmp`;
-    try {
-      const file = await open(temporary, 'wx', 0o600);
-      try {
-        await file.writeFile(JSON.stringify(state) + '\n');
-        await file.sync();
-      } finally { await file.close(); }
-      await rename(temporary, this.path);
-      if (process.platform !== 'win32') {
-        const directory = await open(dirname(this.path), 'r');
-        try { await directory.sync(); } finally { await directory.close(); }
-      }
-    } finally { await rm(temporary, { force: true }); }
+    return writePrivateJson(this.path, state);
   }
+}
+
+export async function writePrivateJson(path: string, value: unknown) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    const file = await open(temporary, 'wx', 0o600);
+    try {
+      await file.writeFile(JSON.stringify(value) + '\n');
+      await file.sync();
+    } finally { await file.close(); }
+    await rename(temporary, path);
+    if (process.platform !== 'win32') {
+      const directory = await open(dirname(path), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
+  } finally { await rm(temporary, { force: true }); }
 }
