@@ -78,7 +78,17 @@ export async function converse(options: ConversationOptions, session: AgentSessi
     conversation = { sessionId: session.id, bindingId: session.bindingId, openingMessage };
     await writePrivateJson(path, conversation);
   }
-  if (session.snapshot.recipient_agent_id === options.profile.agentId) await session.accept();
+  if (session.snapshot.recipient_agent_id === options.profile.agentId) {
+    try { await session.accept(); }
+    catch (error) {
+      if (!(error instanceof AgentClientError) || error.code !== 'SESSION_TERMINAL') throw error;
+      await session.status();
+      if (!terminal(session)) throw error;
+    }
+    // The owner/peer may close an offer after status() or the server may replay
+    // an earlier acceptance whose session has since ended. Neither starts work.
+    if (terminal(session)) { await forget(options, session); return; }
+  }
   if (openingMessage !== undefined) {
     while (session.snapshot.state === 'pending') await session.status({ wait: 20 });
     if (terminal(session)) { await forget(options, session); return; }

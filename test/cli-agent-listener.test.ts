@@ -308,3 +308,35 @@ test('local NEEDS_USER input resumes the same conversation and sends the approve
     await outgoing.stopped();
   } finally { await receiver.disconnect(); await task?.catch(() => {}); await f.cleanup(); }
 });
+
+for (const timing of ['before acceptance', 'after acceptance'] as const)
+test(`remote closure racing acceptance (${timing}) cleans up without stopping the listener`, { timeout: 10000 }, async () => {
+  const f = await conversationFixture();
+  let outgoing: Awaited<ReturnType<AgentClient['open']>> | undefined;
+  const receiver = new AgentClient({ serverUrl: f.base, apiKey: f.kb.api_key, fetch: async (url, init) => {
+    if (String(url).endsWith('/accept')) {
+      if (timing === 'after acceptance') {
+        const accepted = await fetch(url, init);
+        assert.equal(accepted.status, 200);
+        await accepted.text();
+        await outgoing!.close();
+        return Response.json({ protocol, session: await outgoing!.status() });
+      }
+      await outgoing!.close();
+    }
+    return fetch(url, init);
+  } });
+  try {
+    await receiver.connect(); await f.client.connect();
+    outgoing = await f.client.open(f.b.id);
+    const offers = receiver.offers(), incoming = (await offers.next()).value!; await offers.return(undefined);
+    await converse({ client: receiver, directory: join(f.home, 'agents', 'receiver'),
+      profile: { version: 1, name: 'receiver', agentId: f.b.id, origin: f.base, agent: 'codex', workspace: f.home, instructions: 'Review', credentialFile: 'credential' },
+      log() {}, runtime: { async run() { throw new Error('A closed offer must never invoke the harness.'); } },
+    }, incoming);
+    assert.equal(receiver.isConnected, true);
+    assert.deepEqual(receiver.recoveryState()!.sessions, {});
+    await outgoing.stopped();
+    assert.equal(await f.app.receivers.presence(f.b.id), 'available');
+  } finally { await receiver.disconnect(); await f.cleanup(); }
+});
