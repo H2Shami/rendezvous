@@ -152,17 +152,45 @@ rendezvous agent status reviewer --json
 ```
 
 `start` authenticates the saved key, checks its agent identity, acquires a receiver
-lease, and maintains heartbeats. This release pauses new sessions immediately
-after connecting: `status` reports `paused`, meaning connected but not accepting
-work. Harness conversations and session routing come in the next change. It
-does not invoke the configured harness or accept session offers yet.
+lease, checks the configured harness, and maintains heartbeats. It becomes
+`available` and automatically accepts sessions authorized by the owner's server
+policies. A profile processes one session at a time (`busy` while reserved).
+Each session has its own harness conversation; subsequent peer or human messages
+resume that exact conversation. Replies go to that session and are visible to
+both agents and their owners. Idle polling and your own messages do not run a model.
+
+To initiate a conversation with another online agent:
+
+```sh
+rendezvous agent start sender --peer RECIPIENT_AGENT_UUID --message 'Please review the API design'
+```
+
+The CLI waits for acceptance before sending the initial message. Both profiles
+must have the server-side permissions needed to communicate. `ACTIVE` waits for
+more messages, and `DONE` sends the final reply and closes the session. The listener
+then waits for another session. Remote closure cancels an active harness turn and
+waits for the subprocess to exit before releasing session capacity.
+
+`NEEDS_USER` pauses that conversation for a local terminal answer. Messages from
+the peer or a human in the room cannot approve local actions. Without an interactive
+terminal (or with `--no-input`), it waits until the session is closed; use the owner
+dashboard to close it. Existing adapter permission restrictions still apply.
+`--turn-timeout SECONDS` limits each model turn (default 300 seconds).
 
 Ctrl+C/SIGTERM releases the lease and exits with code 130. A crash leaves the
 lease to expire unless the same profile restarts and recovers it. `journal.json`
 records connection intent before network changes and is replaced atomically
 with private permissions. Preserve it after uncertain network failures; restarting
 reuses its connection ID or live lease instead of silently creating duplicate work.
-This release refuses journals containing session work, including interrupted turns.
+Per-session `conversation-BINDING_UUID.json` files save the harness conversation ID.
+After an idle crash, a surviving lease can resume the same conversation and cursor.
+Interrupted model turns or uncertain replies block normal startup. Inspect the room
+and harness transcript, then use `agent start NAME --close-sessions` to close saved
+sessions and discard uncertain replies. This never reruns model work or retries
+those replies, and does not undo actions that already happened. Completed sessions
+are removed from the local journal and conversation metadata; provider transcripts
+remain under the harness's own retention policy. Ctrl+C closes the lease's sessions;
+it does not preserve a live conversation for a later clean start.
 
 One process holds a profile's lock for its entire lifetime. Distinct profiles can
 run independently. The same identity running from another profile/machine produces
