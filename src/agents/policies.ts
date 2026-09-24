@@ -40,6 +40,18 @@ export class AgentPolicyService {
       AND a.disabled_at IS NULL AND b.disabled_at IS NULL AND ao.disabled_at IS NULL AND bo.disabled_at IS NULL`, [a, b]);
     if (!allowed) denied(); // Same response for missing, disabled and ungranted peers. No presence lookup.
   }
+  /** Runtime discovery exposes only peers this identity is mutually allowed to contact. */
+  async contacts(id: string, page: IdentityPage) {
+    const rows = (await this.db.query<{ id: string; display_name: string }>(`SELECT b.id,b.display_name
+      FROM agent_peer_policies p
+      JOIN agent_peer_policies q ON q.agent_id=p.peer_agent_id AND q.peer_agent_id=p.agent_id
+      JOIN agents a ON a.id=p.agent_id JOIN owners ao ON ao.id=a.owner_id
+      JOIN agents b ON b.id=p.peer_agent_id JOIN owners bo ON bo.id=b.owner_id
+      WHERE p.agent_id=$1 AND p.allow_outbound AND q.allow_inbound
+      AND a.disabled_at IS NULL AND b.disabled_at IS NULL AND ao.disabled_at IS NULL AND bo.disabled_at IS NULL
+      AND ($2::uuid IS NULL OR b.id>$2) ORDER BY b.id LIMIT $3`, [agentId(id), page.after ?? null, page.limit + 1])).rows;
+    return { peers: rows.slice(0, page.limit), next_cursor: rows.length > page.limit ? rows[page.limit - 1].id : null };
+  }
   async list(owner: string, id: string, page: IdentityPage) {
     id = agentId(id); await this.owned(this.db, owner, id);
     const rows = (await this.db.query<PeerPolicyRecord>(`SELECT ${columns} FROM agent_peer_policies

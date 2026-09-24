@@ -234,3 +234,18 @@ test('a lost takeover acquisition retries its journaled connection ID and intent
     assert.equal(replacement.isConnected, true);
   } finally { await f.stop(); }
 });
+
+test('SDK discovers friend names and availability without creating a conversation', async () => {
+  const f = await setup();
+  try {
+    const client = f.make(); await client.connect();
+    const before = client.receiver;
+    const offline = await client.peers();
+    assert.deepEqual(offline.peers, [{ id: f.b.id, display_name: 'B', availability: 'offline' }]);
+    const peer = f.make(f.kb.api_key); await peer.connect();
+    assert.equal((await client.peers()).peers[0].availability, 'available');
+    assert.deepEqual(client.receiver, before); assert.equal(client.sessions.length, 0);
+    await f.app.policies.delete(f.owner.id, f.b.id, f.a.id);
+    assert.deepEqual((await client.peers()).peers, []);
+  } finally { await f.stop(); }
+});

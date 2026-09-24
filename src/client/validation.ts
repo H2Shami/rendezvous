@@ -67,3 +67,11 @@ export function error(value: unknown): ProtocolErrorResponse {
   if (value.error.retry_after_seconds !== undefined) number(value.error.retry_after_seconds);
   return value as unknown as ProtocolErrorResponse;
 }
+
+export function peers(value: unknown): import('../agents/protocol.js').AgentPeersResponse {
+  envelope(value); uuid(value.agent_id);
+  check(Array.isArray(value.peers) && value.peers.length <= 100);
+  for (const peer of value.peers) { object(peer); uuid(peer.id); text(peer.display_name); check(['offline','paused','busy','available'].includes(peer.availability as string)); }
+  nullable(value.next_cursor, uuid);
+  return value as unknown as import('../agents/protocol.js').AgentPeersResponse;
+}

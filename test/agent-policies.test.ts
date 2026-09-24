@@ -204,3 +204,26 @@ test('concurrent grant updates use ordered locks, and revocation serializes with
     assert.equal((await f.db.query<{ state: string }>('SELECT state FROM agent_sessions WHERE id=$1', [pending])).rows[0].state, 'closed');
   } finally { await f.stop(); }
 });
+
+test('runtime contacts disclose only mutually permitted outbound friends, with cursor paging', async () => {
+  const f = await setup();
+  const read = (suffix = '', key = f.a.key.api_key) => fetch(`${f.base}/api/v1/agents/me/peers${suffix}`, { headers: { Authorization: `Bearer ${key}` } });
+  try {
+    assert.equal((await read('', 'invalid')).status, 401);
+    await f.grant(f.a, f.b);
+    assert.deepEqual((await (await read()).json()).peers, [], 'one-sided permission is not discovery access');
+    await f.grant(f.b, f.a);
+    await f.grant(f.a, f.c); await f.grant(f.c, f.a);
+    const first = await (await read('?limit=1')).json();
+    assert.equal(first.agent_id, f.a.id); assert.equal(first.peers.length, 1);
+    assert.equal(first.peers[0].display_name, 'Agent');
+    assert.ok(['available', 'paused'].includes(first.peers[0].availability));
+    const second = await (await read(`?limit=1&after=${first.next_cursor}`)).json();
+    assert.notEqual(first.peers[0].id, second.peers[0].id); assert.equal(second.next_cursor, null);
+    await f.grant(f.b, f.a, false, true);
+    assert.deepEqual((await (await read()).json()).peers.map((p: any) => p.id), [f.c.id]);
+    assert.equal((await read('?agent_id=' + f.b.id)).status, 400);
+    await f.agents.revokeKey(f.a.owner, f.a.id, f.a.key.credential.id);
+    assert.equal((await read()).status, 401);
+  } finally { await f.stop(); }
+});

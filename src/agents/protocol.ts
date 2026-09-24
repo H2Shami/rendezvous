@@ -122,3 +122,7 @@ export interface PeerPolicy extends PeerPolicyInput {
 export interface PeerPolicyResponse extends ProtocolEnvelope { policy: PeerPolicy }
 export interface PeerPolicyListResponse extends ProtocolEnvelope { policies: PeerPolicy[]; next_cursor: UUID | null }
 export interface DeletePeerPolicyResponse extends ProtocolEnvelope { deleted: true }
+
+/** Permitted outbound contacts; availability is a snapshot, admission rechecks policy. */
+export interface AgentPeer extends AgentProfile { availability: Availability }
+export interface AgentPeersResponse extends ProtocolEnvelope { agent_id: UUID; peers: AgentPeer[]; next_cursor: UUID | null }

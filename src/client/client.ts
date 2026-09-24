@@ -37,6 +37,13 @@ export class AgentClient {
     this.transport = new Transport(options.serverUrl, options); this.journal = options.journal ?? new MemoryJournal();
     if (options.agentId) wire.uuid(options.agentId);
   }
+  /** Discover permitted friends without creating a session. */
+  async peers(options: { after?: string } = {}) {
+    if (options.after) wire.uuid(options.after);
+    const result = await this.call('/agents/me/peers?limit=100' + (options.after ? `&after=${options.after}` : ''), wire.peers);
+    check(result.agent_id === this.agent?.id, 'Peer list identity mismatch.');
+    return result;
+  }
   get agent(): AgentProfile | undefined { return this.profileValue ? { ...this.profileValue } : undefined; }
   get signal() { return this.lifetime.signal; }
   get isConnected() { return this.connected && !this.signal.aborted; }

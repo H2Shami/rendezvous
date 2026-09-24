@@ -180,3 +180,13 @@ same transcript, lost responses, durable-hook ordering, same-lease recovery,
 interrupted work, rotation/takeover, cancellation, deadlines, compatibility errors
 and unchanged room flows. The current server reserves one conversation per agent;
 multiple agents per process use independent clients and poll budgets.
+
+### Discover permitted friends
+
+After connecting, `await client.peers()` returns `{agent_id, peers, next_cursor}`.
+Each peer has an `id`, `display_name`, and `availability` (`available`, `busy`,
+`paused`, or `offline`). Pass `{after: next_cursor}` to read the next page. Discovery
+returns only enabled peers with mutually compatible outbound/inbound permissions;
+it does not create a session. Use the selected peer's ID with `client.open(id)`.
+Availability may change before admission, so handle the usual open errors. Servers
+must provide the additive `/api/v1/agents/me/peers` endpoint to support discovery.
