@@ -1,3 +1,4 @@
+import { agentStatus } from './agent-listener.js';
 import { fork, type ChildProcess } from 'node:child_process';
 import { roomStatus, type RoomStatus } from './room-status.js';
 import { TerminalInput } from './tui-input.js';
@@ -11,9 +12,9 @@ import { palette as p, TuiScreen } from './tui-screen.js';
 import { tuiActions, type TuiAction } from './tui-actions.js';
 
 interface Choice { id: string; title: string; detail: string; disabled?: boolean }
-interface Picker { title: string; rows: Choice[]; choose: (row: Choice) => void; request?: string; loading?: boolean }
+interface Picker { title: string; rows: Choice[]; choose: (row: Choice) => void; request?: string; loading?: boolean; error?: string }
 interface Prompt { id: string; label: string; hint: string; secret: boolean; defaultValue?: string }
-interface Job { id: string; title: string; child: ChildProcess; model: AgentTuiModel; output: string[]; running: boolean; code?: number | null; prompt?: Prompt; controls?: boolean }
+interface Job { id: string; title: string; child: ChildProcess; model: AgentTuiModel; output: string[]; running: boolean; code?: number | null; prompt?: Prompt; controls?: boolean; chatRequest?: string }
 type View = 'home' | 'agents' | 'rooms' | 'settings' | 'jobs' | 'job';
 interface Form { action: TuiAction; values: Record<string, string>; field: number; job?: string; session?: string }
 const nav: { id: View; title: string; hint: string }[] = [
@@ -31,7 +32,7 @@ export class RendezvousTui {
   config: Config = {};
   jobs: Job[] = [];
   selectedJob?: string;
-  pane: 'conversation' | 'execution' | 'output' = 'conversation';
+  pane: 'activity' | 'conversation' | 'execution' | 'output' = 'activity';
   selected = 0;
   input = '';
   paletteOpen = false;
@@ -50,6 +51,26 @@ export class RendezvousTui {
     } else if (button === 0) this.hits.findLast(hit => x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h)?.action();
     this.changed();
   };
+  private statusTimer?: NodeJS.Timeout;
+  private statusAbort = new AbortController();
+  private refreshingAgents = false;
+  agentStatuses = new Map<string, string>();
+  private async refreshAgentStatuses() {
+    if (this.refreshingAgents || this.closing) return; this.refreshingAgents = true;
+    try {
+      const profiles = await listProfiles(); this.profiles = profiles;
+      const pending = [...profiles];
+      await Promise.all(Array.from({ length: Math.min(4, profiles.length) }, async () => {
+        while (pending.length && !this.closing) {
+          const profile = pending.shift()!;
+          try { const status = await agentStatus(profile.name, AbortSignal.any([this.statusAbort.signal, AbortSignal.timeout(5000)])); this.agentStatuses.set(profile.name, status.availability); }
+          catch { this.agentStatuses.set(profile.name, 'unknown · refresh failed'); }
+          this.changed();
+        }
+      }));
+    } catch { this.notice = 'Could not refresh saved agents.'; }
+    finally { this.refreshingAgents = false; this.changed(); }
+  }
   private timer?: NodeJS.Timeout;
   private dirty = true;
   private writing = false;
@@ -78,12 +99,14 @@ export class RendezvousTui {
     this.stdin.on('keypress', this.key); this.stderr.on('resize', this.resize);
     process.once('SIGINT', this.requestQuit); process.once('SIGTERM', this.requestQuit);
     this.stderr.write('\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1006h');
+    this.statusTimer = setInterval(() => { if (this.view === 'agents') void this.refreshAgentStatuses(); }, 10000);
     this.timer = setInterval(() => this.draw(), 80);
     try {
       const done = new Promise<void>(resolve => { this.done = resolve; });
       if (initial?.length) this.launch(initial);
       this.draw(); await done;
     } finally {
+      clearInterval(this.statusTimer); this.statusAbort.abort();
       this.stdin.removeListener('data', this.inputRouter.feed); this.inputRouter.close();
       clearInterval(this.timer); this.stdin.removeListener('keypress', this.key); this.stderr.removeListener('resize', this.resize);
       process.removeListener('SIGINT', this.requestQuit); process.removeListener('SIGTERM', this.requestQuit);
@@ -94,7 +117,7 @@ export class RendezvousTui {
   private resize = () => this.changed();
   private requestQuit = () => { process.exitCode = 130; void this.quit(); };
   private async quit() {
-    if (this.closing) return; this.closing = true;
+    if (this.closing) return; this.closing = true; this.statusAbort.abort();
     this.notice = 'Stopping active work and releasing listeners…'; this.changed();
     await Promise.all(this.jobs.filter(job => job.running).map(job => new Promise<void>(resolve => {
       job.child.once('close', () => resolve()); job.child.kill('SIGTERM');
@@ -110,9 +133,9 @@ export class RendezvousTui {
     const title = args[0] === 'agent' ? `Agent ${args[1]}${args[2] ? ` · ${args[2]}` : ''}` : `${args[0] === '--version' ? 'Version' : args[0]}`;
     const job: Job = { id: randomUUID(), title: this.safe(title), child, model: new AgentTuiModel(args[0] === 'agent' ? args[2] ?? 'Agent' : 'Room'), output: [], running: true };
     this.jobs.push(job); if (this.jobs.length > 30) { const i = this.jobs.findIndex(j => !j.running); if (i >= 0) this.jobs.splice(i, 1); }
-    this.selectedJob = job.id; this.view = 'job'; this.pane = args.includes('start') || args[0] === 'join' || args[0] === 'create' && !args.includes('--no-join') ? 'execution' : 'output';
+    this.selectedJob = job.id; this.view = 'job'; this.pane = args.includes('start') || args[0] === 'join' || args[0] === 'create' && !args.includes('--no-join') ? 'activity' : 'output';
     this.input = ''; this.scroll = 0;
-    const append = (text: string) => { job.output.push(this.safe(text)); job.model.log(this.safe(text)); if (job.output.length > 250) job.output.shift(); this.changed(); };
+    const append = (text: string) => { job.output.push(this.safe(text)); if (job.output.length > 250) job.output.shift(); this.changed(); };
     for (const stream of [child.stdout!, child.stderr!]) {
       stream.setEncoding('utf8'); let carry = '';
       stream.on('data', (chunk: string) => {
@@ -132,12 +155,16 @@ export class RendezvousTui {
       } else if (message?.type === 'prompt_done' && job.prompt?.id === message.id) { job.prompt = undefined; if (this.selectedJob === job.id && !this.form && !this.paletteOpen) this.input = ''; }
       else if (message?.type === 'peers_result') this.receivePeers(job, message);
       else if (message?.type === 'controls') job.controls = !!message.available;
-      else if (message?.type === 'control_result') this.notice = message.ok ? 'Action completed.' : this.safe(message.error ?? 'Action failed.');
+      else if (message?.type === 'control_result') {
+        if (job.chatRequest === message.id) { job.chatRequest = undefined; if (message.ok && this.selectedJob === job.id && !this.form && !this.picker && !this.paletteOpen) this.input = ''; }
+        this.notice = message.ok ? message.action === 'steer' ? 'Instruction queued for the session harness.' : message.action === 'chat' ? 'Private message accepted.' : 'Action completed.' : this.safe(message.error ?? 'Action failed.');
+      }
       this.changed();
     });
     child.on('error', error => append(`Could not start: ${error.message}`));
     child.on('close', code => {
-      job.running = false; job.code = code; job.prompt = undefined;
+      job.running = false; job.code = code; job.prompt = undefined; job.chatRequest = undefined;
+      if (code !== 0 && code !== 130) job.model.add({ kind: 'error', time: new Date().toISOString(), text: job.output.slice(-3).join('\n') || 'Process stopped. See Output for diagnostics.' });
       append(code === 0 ? 'Completed.' : code === 130 ? 'Disconnected.' : `Process exited (${code ?? 'signal'}).`);
       void this.refresh();
     });
@@ -193,7 +220,9 @@ export class RendezvousTui {
     if (!this.picker || this.picker.request !== message.id) return;
     const previous = this.picker.rows.filter(row => row.id !== 'more');
     if (message.error) {
-      this.picker.loading = false; this.notice = this.safe(message.error) + ' Update the backend if friend discovery is unavailable; Esc cancels.'; this.changed(); return;
+      this.pick('Friend list unavailable', [{ id: 'retry', title: 'Retry discovery', detail: job.model.server.replace(/^Connecting to /, '') }], () => this.contact(job));
+      this.picker!.error = message.code === 'NOT_FOUND' ? 'This server is missing friend discovery. Deploy the backend update, then retry.' : this.safe(message.error);
+      this.changed(); return;
     }
     const rows: Choice[] = [...previous, ...message.peers.map((peer: any) => ({ id: peer.id,
       title: this.safe(peer.display_name), detail: `${peer.availability} · ${peer.id}`, disabled: peer.availability !== 'available' }))];
@@ -201,13 +230,13 @@ export class RendezvousTui {
     if (message.next_cursor) rows.push({ id: 'more', title: 'Load more friends', detail: 'Search includes the loaded pages' });
     this.pick(`Friends of ${job.model.profile}`, rows, row => {
       if (row.id === 'more') { this.contact(job, message.next_cursor, rows); return; }
-      this.selectedJob = job.id; this.view = 'job'; this.pane = 'conversation';
+      this.selectedJob = job.id; this.view = 'job'; this.pane = 'activity';
       this.activate({ ...tuiActions.find(a => a.id === 'open')!, description: `Message ${row.title} from ${job.model.profile}` }, { peer: row.id });
     });
     if (!rows.length) this.notice = 'No permitted friends yet. Add a friend and enable outbound/inbound access in the dashboard.';
   }
   private pickerRows() { const query = this.input.toLowerCase(); return this.picker!.rows.filter(row => row.id === 'more' || `${row.title} ${row.detail}`.toLowerCase().includes(query)); }
-  private selectView(view: View) { this.view = view; this.selected = 0; this.input = ''; this.form = undefined; this.picker = undefined; this.paletteOpen = false; this.scroll = 0; this.changed(); if (view === 'rooms') { this.notice = 'Refreshing rooms from their servers…'; void this.refreshRooms().then(() => { if (this.notice === 'Refreshing rooms from their servers…') this.notice = ''; this.changed(); }); } }
+  private selectView(view: View) { this.view = view; this.selected = 0; this.input = ''; this.form = undefined; this.picker = undefined; this.paletteOpen = false; this.scroll = 0; this.changed(); if (view === 'agents') void this.refreshAgentStatuses(); if (view === 'rooms') { this.notice = 'Refreshing rooms from their servers…'; void this.refreshRooms().then(() => { if (this.notice === 'Refreshing rooms from their servers…') this.notice = ''; this.changed(); }); } }
   private actions() { const query = this.input.replace(/^\//, '').toLowerCase(); return tuiActions.filter(a => `${a.id} ${a.title} ${a.description}`.toLowerCase().includes(query)); }
   activate(action: TuiAction, values: Record<string, string> = {}) {
     this.paletteOpen = false; this.picker = undefined; this.input = ''; this.selected = 0; this.notice = '';
@@ -220,7 +249,7 @@ export class RendezvousTui {
       if (!listeners.length) this.notice = 'Start a saved agent first, then choose Contact an agent.';
       return;
     }
-    if (['start', 'inspect', 'status'].includes(action.id) && !values.profile) {
+    if (['start', 'inspect'].includes(action.id) && !values.profile) {
       this.pick('Refreshing saved agents…', [], () => {});
       const pending = this.picker;
       void listProfiles().then(profiles => {
@@ -244,7 +273,7 @@ export class RendezvousTui {
       if (action.id === 'close' && (!job?.controls || job.model.session === 'none')) { this.notice = 'Select an online agent with an active conversation.'; this.changed(); return; }
       this.form = { action: { ...action, fields: [{ key: 'confirm', label: action.id === 'quit' ? 'Stop active work and quit?' : `Confirm ${action.id} for ${job!.title}?`, required: true, choices: ['no', 'yes'] }] }, values: { confirm: 'no' }, field: 0, job: job?.id, session: job?.model.session };
     } else if (action.fields) {
-      this.form = { action, values: { ...values, ...Object.fromEntries(action.fields.map(field => [field.key, values[field.key] ?? (field.key === 'agent' ? this.config.agent : undefined) ?? field.initial ?? ''])) }, field: 0, job: job?.id };
+      this.form = { action, values: { ...values, ...Object.fromEntries(action.fields.map(field => [field.key, values[field.key] ?? (field.key === 'agent' ? this.config.agent : undefined) ?? field.initial ?? ''])) }, field: 0, job: job?.id, session: job?.model.session };
     } else if (action.command) this.launch(action.command({}));
     this.changed();
   }
@@ -262,6 +291,9 @@ export class RendezvousTui {
         else if (action.id === 'stop') job.child.kill('SIGTERM');
         else if (!job.controls) throw new Error('The listener is reconnecting; try again when online.');
         else job.child.send({ type: 'control', id: randomUUID(), action: 'close', sessionId: form.session });
+      } else if (action.id === 'steer') {
+        if (!job?.running || !job.controls || !form.session || form.session === 'none') throw new Error('Select an active agent conversation.');
+        job.child.send({ type: 'control', id: randomUUID(), action: 'steer', sessionId: form.session, message: values.message });
       } else if (action.id === 'open') {
         if (!job?.running || !job.controls) throw new Error('Select a running agent listener first.');
         job.child.send({ type: 'control', id: randomUUID(), action: 'open', peer: values.peer, message: values.message });
@@ -309,8 +341,21 @@ export class RendezvousTui {
         job.child.send({ type: 'answer', id: job.prompt!.id, value }); this.input = '';
       } else if (key.name === 'backspace') this.input = [...this.input].slice(0, -1).join('');
       else if (!key.ctrl && !key.meta && text && !/[\x00-\x1f\x7f]/.test(text)) this.input = (this.input + text).slice(0, 32768);
+    } else if (this.view === 'job' && this.job()?.controls && this.job()?.running) {
+      const job = this.job()!;
+      if (text === '/' && !this.input) { this.paletteOpen = true; this.selected = 0; }
+      else if (key.name === 'tab') { this.pane = (['activity', 'conversation', 'execution', 'output'] as const)[(['activity', 'conversation', 'execution', 'output'].indexOf(this.pane) + 1) % 4]; this.scroll = 0; }
+      else if (key.name === 'pageup') this.scroll = Math.min(10000, this.scroll + 8);
+      else if (key.name === 'pagedown') this.scroll = Math.max(0, this.scroll - 8);
+      else if (key.name === 'end') this.scroll = 0;
+      else if (key.ctrl && key.name === 'u' && !job.chatRequest) this.input = '';
+      else if (key.name === 'return' && this.input.trim() && !job.chatRequest) {
+        job.chatRequest = randomUUID(); this.pane = 'activity';
+        job.child.send({ type: 'control', id: job.chatRequest, action: 'chat', message: this.input.trim() });
+      } else if (!job.chatRequest && key.name === 'backspace') this.input = [...this.input].slice(0, -1).join('');
+      else if (!job.chatRequest && !key.ctrl && !key.meta && text && !/[\x00-\x1f\x7f]/.test(text)) this.input = (this.input + text).slice(0, 32768);
     } else if (text === '/') { this.paletteOpen = true; this.input = ''; this.selected = 0; }
-    else if (key.name === 'tab' && this.view === 'job') { this.pane = this.pane === 'conversation' ? 'execution' : this.pane === 'execution' ? 'output' : 'conversation'; this.scroll = 0; }
+    else if (key.name === 'tab' && this.view === 'job') { this.pane = (['activity', 'conversation', 'execution', 'output'] as const)[(['activity', 'conversation', 'execution', 'output'].indexOf(this.pane) + 1) % 4]; this.scroll = 0; }
     else if (key.name === 'pageup') this.scroll = Math.min(10000, this.scroll + 8);
     else if (key.name === 'pagedown') this.scroll = Math.max(0, this.scroll - 8);
     else if (key.name === 'end') this.scroll = 0;
@@ -322,9 +367,14 @@ export class RendezvousTui {
     this.changed();
   };
   private openSelected() {
-    if (this.view === 'agents' && this.profiles.length) this.activate(tuiActions.find(a => a.id === 'start')!, { profile: this.profiles[this.selected % this.profiles.length].name });
+    if (this.view === 'agents' && this.profiles.length) {
+      const profile = this.profiles[this.selected % this.profiles.length];
+      const job = this.jobs.find(j => j.running && j.model.profile === profile.name);
+      if (job) { this.selectedJob = job.id; this.view = 'job'; this.pane = 'activity'; this.input = ''; this.scroll = 0; }
+      else this.activate(tuiActions.find(a => a.id === 'start')!, { profile: profile.name });
+    }
     else if (this.view === 'rooms' && this.rooms.length) void this.chooseRoom(this.rooms[this.selected % this.rooms.length]);
-    else if (this.view === 'jobs' && this.jobs.length) { this.selectedJob = this.jobs[this.selected % this.jobs.length].id; this.view = 'job'; this.pane = 'execution'; this.input = ''; this.scroll = 0; }
+    else if (this.view === 'jobs' && this.jobs.length) { this.selectedJob = this.jobs[this.selected % this.jobs.length].id; this.view = 'job'; this.pane = 'activity'; this.input = ''; this.scroll = 0; }
     else if (this.view === 'settings') this.activate(tuiActions.find(a => a.id === (this.selected % 2 ? 'config-server' : 'config-agent'))!);
     else if (this.view === 'home') this.activate(tuiActions.find(a => a.id === ['start', 'setup', 'create', 'join'][this.selected % 4])!);
   }
@@ -363,13 +413,16 @@ export class RendezvousTui {
       const job = this.job();
       s.text(x, 5, job?.title ?? 'No process selected', p.text, true, mainWidth);
       if (job?.model.identity) s.text(x, 6, `${job.model.identity} · ${job.model.server.replace(/^Connecting to /, '')}`, p.muted, false, mainWidth);
-      s.text(x, 7, job?.running ? job.model.state : job?.code === 0 ? 'Completed' : 'Stopped', job?.running ? p.secondary : p.muted, false, mainWidth);
-      if (job && mainWidth > 55) s.text(x + 30, 7, `Session ${job.model.session.slice(0, 8)} · thread ${job.model.thread.slice(0, 12)}`, p.muted, false, mainWidth - 30);
-      s.text(x, 9, ['conversation', 'execution', 'output'].map(tab => tab === this.pane ? `[ ${tab} ]` : `  ${tab}  `).join('  '), p.secondary, false, mainWidth);
+      s.text(x, 7, job?.running ? job.model.state : job?.code === 0 ? 'Completed' : 'Stopped', job?.running ? p.secondary : p.muted, false, Math.min(mainWidth, 44));
+      if (job && mainWidth > 75) s.text(x + 46, 7, `Session ${job.model.session.slice(0, 8)} · thread ${job.model.thread.slice(0, 12)}`, p.muted, false, mainWidth - 46);
+      s.text(x, 9, ['activity', 'conversation', 'execution', 'output'].map(tab => tab === this.pane ? `[ ${tab} ]` : `  ${tab}  `).join('  '), p.secondary, false, mainWidth);
       let tabX = x;
-      for (const tab of ['conversation', 'execution', 'output'] as const) { this.hit(tabX, 9, tab.length + 6, 1, () => { this.pane = tab; this.scroll = 0; }); tabX += tab.length + 6; }
-      this.hit(x, height - 6, mainWidth, 3, () => { if (!job?.prompt) this.key(undefined, { name: 'p', ctrl: true }); });
-      const entries = job ? this.pane === 'conversation' ? job.model.room : this.pane === 'execution' ? job.model.execution : job.output : [];
+      for (const tab of ['activity', 'conversation', 'execution', 'output'] as const) { this.hit(tabX, 9, tab.length + 6, 1, () => { this.pane = tab; this.scroll = 0; }); tabX += tab.length + 6; }
+      s.text(x, 8, '[ Contact friend ]   [ Steer session ]   [ Close conversation ]', p.secondary, false, mainWidth);
+      this.hit(x, 8, 18, 1, () => this.activate(tuiActions.find(a => a.id === 'open')!));
+      this.hit(x + 21, 8, 18, 1, () => this.activate(tuiActions.find(a => a.id === 'steer')!));
+      this.hit(x + 42, 8, 24, 1, () => this.activate(tuiActions.find(a => a.id === 'close')!));
+      const entries = job ? this.pane === 'activity' ? job.model.activity : this.pane === 'conversation' ? job.model.room : this.pane === 'execution' ? job.model.execution : job.output : [];
       const visible: string[] = [];
       for (const entry of entries) for (const line of entry.split('\n')) {
         const chars = [...line]; for (let i = 0; i < Math.max(1, chars.length); i += Math.max(1, mainWidth - 4)) visible.push(chars.slice(i, i + mainWidth - 4).join(''));
@@ -377,15 +430,15 @@ export class RendezvousTui {
       const count = Math.max(1, height - 19), end = Math.max(0, visible.length - this.scroll);
       s.rect(x, 11, mainWidth, count + 1, p.panel);
       visible.slice(Math.max(0, end - count), end).forEach((line, i) => s.text(x + 2, 12 + i, line, this.pane === 'execution' ? p.muted : p.text, false, mainWidth - 4));
-      if (!entries.length) s.text(x + 2, 12, 'Waiting for activity…', p.muted, false, mainWidth - 4);
+      if (!entries.length) s.text(x + 2, 12, 'Message your agent below, or choose Contact friend.', p.muted, false, mainWidth - 4);
       const prompt = job?.prompt;
       s.rect(x, height - 6, mainWidth, 3, p.raised); s.text(x, height - 6, '▌', p.primary);
-      s.text(x + 2, height - 6, prompt ? `${prompt.secret ? 'PRIVATE · ' : ''}${prompt.label}` : 'COMMANDS', p.secondary, true, mainWidth - 4);
-      s.text(x + 2, height - 5, prompt ? (prompt.secret ? '•'.repeat(Math.min(40, this.input.length)) : this.input) || prompt.defaultValue || 'Type your answer, then Enter…' : '/ open · close · stop · switch processes', prompt ? p.text : p.muted, false, mainWidth - 4);
+      s.text(x + 2, height - 6, prompt ? `${prompt.secret ? 'PRIVATE · ' : ''}${prompt.label}` : job?.controls ? 'PRIVATE CHAT · only you and this agent' : 'COMMANDS', p.secondary, true, mainWidth - 4);
+      s.text(x + 2, height - 5, prompt ? (prompt.secret ? '•'.repeat(Math.min(40, this.input.length)) : this.input) || prompt.defaultValue || 'Type your answer, then Enter…' : job?.controls ? this.input || (job.chatRequest ? 'Harness working…' : 'Message your agent… Enter sends · / commands') : '/ commands', prompt ? p.text : p.muted, false, mainWidth - 4);
       if (prompt) s.text(x + 2, height - 4, prompt.hint, p.muted, false, mainWidth - 4);
     } else {
       const heading = nav.find(n => n.id === this.view)!; s.text(x, 5, heading.title, p.text, true); s.text(x, 7, heading.hint, p.muted);
-      const entries = this.view === 'agents' ? this.profiles.map(a => [a.name, `${a.agent} · ${a.origin}`, a.agentId])
+      const entries = this.view === 'agents' ? this.profiles.map(a => [a.name, `${this.agentStatuses.get(a.name) ?? 'checking…'} · ${a.agent}`, a.origin])
         : this.view === 'rooms' ? this.rooms.map(r => [r.session_id, r.invite_url.split('/').slice(0, 3).join('/'), this.roomStatuses.get(r.room_file)?.detail ?? 'Not yet checked on server'])
         : this.view === 'jobs' ? this.jobs.map(j => [j.title, j.running ? j.model.state : `Finished · ${j.code ?? 'signal'}`, j.prompt ? 'Needs local input' : j.model.session])
         : [['Default harness', this.config.agent ?? 'codex', 'Used when a command does not choose a harness'], ['Default server', this.config.server ?? 'https://dev.userendezvous.com', 'Command overrides remain available']];
@@ -408,6 +461,7 @@ export class RendezvousTui {
       s.text(x + 2, y + 1, this.picker.title, p.secondary, true, w - 4);
       s.text(x + 2, y + 3, `› ${this.input || 'Search by name…'}`, p.text, false, w - 4);
       const rows = this.pickerRows(), count = Math.max(1, Math.floor((h - 7) / 2)), start = Math.floor(this.selected / count) * count;
+      if (this.picker.error) s.wrap(x + 2, y + 3, this.picker.error, w - 4, p.secondary, 2);
       if (this.picker.loading) s.text(x + 2, y + 5, 'Loading friends…', p.muted);
       else if (!rows.length) s.text(x + 2, y + 5, 'No matching options.', p.muted);
       else rows.slice(start, start + count).forEach((row, i) => {

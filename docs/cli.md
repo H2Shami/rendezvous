@@ -380,7 +380,7 @@ primary actions and rose accents, a workspace sidebar, and a searchable command
 palette. `rendezvous agent start NAME` also opens the app with that listener selected.
 
 - Press `/` or Ctrl+P for commands. Guided forms cover agent setup/start/inspection/
-  status, room creation/joining, owner links, and harness/server defaults.
+  room creation/joining, owner links, and harness/server defaults.
 - Use **Run any CLI command** for every existing flag, including file paths,
   explicit state, retry controls, JSON output, and turn limits. Arguments support
   quotes; they are parsed directly without shell expansion. `--objective-file -`
@@ -404,7 +404,20 @@ palette. `rendezvous agent start NAME` also opens the app with that listener sel
   Enter to advance or submit the last field. Esc cancels a form.
 - Active work holds up to eight concurrent processes, so separate agent profiles
   can listen on the same machine. Existing per-profile and harness locks still apply.
-- Tab switches the selected process between Conversation, Execution, and Output.
+- The Agents tab refreshes availability when opened and every ten seconds while
+  visible. Select a running agent to return to its workspace. The standalone
+  `agent status` command remains available for headless use.
+- Starting an agent opens its Activity workspace with a private message composer.
+  Type a message and press Enter; `/` or Ctrl+P opens commands. Private chat uses a
+  separate persistent harness thread and never sends its output to a room.
+- **Steer session** explicitly sends local instructions to the current session's
+  harness; its resulting reply can be shared with the room. Private messages and
+  steering serialize with peer-triggered turns. They do not satisfy a pending
+  local approval prompt automatically; answer that prompt directly.
+- Tab switches between Activity, Conversation, Execution, and Output.
+  Activity combines injected messages, supported tool/assistant events, private
+  responses, and room replies. Raw command logs stay in Output. This displays the
+  harness event stream; it does not embed the vendor’s native terminal application.
   Page Up / Page Down scroll; End returns to live output. Execution shows supported
   public harness events, delivery progress, and intentional silence. Output contains
   ordinary CLI results, including requested invitations and private owner links.
@@ -426,3 +439,10 @@ Headless operation remains available: `agent start NAME --no-tui` uses plain log
 and `--events` emits JSON lines. Pipes, non-TTY environments, and `TERM=dumb` keep
 plain behavior automatically. `NO_COLOR` disables color. The app needs at least a
 46-column, 20-row terminal; smaller windows show a resize hint.
+
+Private turns pause new admission while idle and keep heartbeats running. During an
+active session they execute between shared turns without changing receiver identity.
+Interrupted private work keeps an `inFlight` marker in `local-chat.json`; inspect
+that harness thread before resetting the local chat. It is never automatically
+replayed. Shared session steering uses the existing durable turn marker, preserving
+unread peer-message cursors on failure.

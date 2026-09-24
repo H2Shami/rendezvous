@@ -328,10 +328,11 @@ test('agent TUI and explicit plain mode both disconnect cleanly in a real termin
     for (const plain of [false, true]) {
       const result = await terminal([process.execPath, 'dist/cli/main.js', 'agent', 'start', 'tui', ...(plain ? ['--no-tui'] : [])],
         plain ? [{ wait: 'connected; accepting sessions', send: '', screen: true, signal: 'SIGINT' }] : [
-          { wait: 'Online', send: '/contact an agent\r', screen: true },
+          { wait: 'Online', send: 'Hello privately\r', screen: true },
+          { wait: 'Agent → you (private)', send: '\x10contact an agent\r', screen: true },
           { wait: 'Known Friend', send: '\r', screen: true },
           { wait: 'Opening message', send: 'Hello from the friend picker\r', screen: true },
-          { wait: 'reply_sent', send: '\x03', screen: true },
+          { wait: 'Agent → room', send: '\x03', screen: true },
         ], env);
       assert.equal(result.code, 130, result.transcript);
       assert.equal(result.transcript.includes('\x1b[?1049h'), !plain);
@@ -342,6 +343,7 @@ test('agent TUI and explicit plain mode both disconnect cleanly in a real termin
         const session = await accepted; await offered.return(undefined);
         const page = await f.app.agentSessions.ownerMessages(owner.id, session.id, 0, 0);
         assert.ok(page.messages.some(message => message.content === 'Hello from the friend picker'));
+        assert.ok(page.messages.every(message => !message.content.includes('Hello privately')));
       }
     }
   } finally {

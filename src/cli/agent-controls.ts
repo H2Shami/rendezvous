@@ -1,8 +1,12 @@
+import { LocalInput } from './local-input.js';
+import { localChat } from './local-chat.js';
 import { AgentClientError, type AgentSession } from '../client/index.js';
 import { converse, type ConversationOptions } from './agent-conversations.js';
 
 export interface AgentControls {
   peers?(after?: string): Promise<import('../agents/protocol.js').AgentPeersResponse>;
+  steer?(sessionId: string, message: string): Promise<void>;
+  chat?(message: string): Promise<void>;
   open(peer: string, message: string): Promise<void>;
   close(sessionId: string): Promise<void>;
 }
@@ -13,22 +17,37 @@ export async function controlledConversations(options: ConversationOptions, regi
   initial?: { peer: string; message: string }) {
   const { client } = options;
   let current: AgentSession | undefined, busy = true, finished = false;
-  let queued: { peer: string; message: string; resolve: () => void; reject: (error: unknown) => void } | undefined;
+  let queued: { peer?: string; message: string; resolve: () => void; reject: (error: unknown) => void } | undefined;
   let wake!: () => void;
   const commandSignal = () => new Promise<{ kind: 'command' }>(resolve => { wake = () => resolve({ kind: 'command' }); });
   let command = commandSignal();
   const abort = new AbortController();
   const offers = client.offers({ signal: AbortSignal.any([client.signal, abort.signal]) });
   const next = () => offers.next().then(result => ({ kind: 'offer' as const, result }), error => ({ kind: 'error' as const, error }));
+  let input: LocalInput | undefined;
   let offered: ReturnType<typeof next> | undefined;
   async function run(session: AgentSession, message?: string) {
-    busy = true; current = session;
+    busy = true; current = session; input = new LocalInput();
     options.events?.({ kind: 'session', sessionId: session.id, bindingId: session.bindingId,
       text: session.snapshot.state === 'pending' ? 'Waiting for peer acceptance' : 'Resuming conversation' });
-    try { await converse(options, session, message); }
-    finally { current = undefined; busy = false; }
+    try { await converse({ ...options, localInput: input }, session, message); }
+    finally { current = undefined; input = undefined; busy = false; }
   }
   register({
+    async steer(sessionId, message) {
+      if (!current || current.id !== sessionId || !input || current.snapshot.state !== 'active') throw new Error('Select the current active conversation.');
+      if (!message.trim() || Buffer.byteLength(message) > 32768) throw new Error('Message must contain 1–32768 bytes.');
+      input.send(JSON.stringify({ kind: 'steer', message }));
+    },
+    chat(message) {
+      if (finished || client.signal.aborted) return Promise.reject(new Error('Listener disconnected.'));
+      if (!message.trim() || Buffer.byteLength(message) > 32768) return Promise.reject(new Error('Message must contain 1–32768 bytes.'));
+      if (current?.snapshot.state === 'active' && input) {
+        try { input.send(JSON.stringify({ kind: 'private', message })); return Promise.resolve(); } catch (error) { return Promise.reject(error); }
+      }
+      if (busy || queued) return Promise.reject(new Error('The harness is busy. Wait for the current turn or session acceptance.'));
+      return new Promise<void>((resolve, reject) => { queued = { message, resolve, reject }; wake(); });
+    },
     peers: after => client.peers({ after }),
     open(peer, message) {
       if (finished || client.signal.aborted) return Promise.reject(new Error('Listener disconnected.'));
@@ -57,6 +76,12 @@ export async function controlledConversations(options: ConversationOptions, regi
         await run(action.result.value);
       } else {
         const request = queued!; queued = undefined; command = commandSignal(); busy = true;
+        if (!request.peer) {
+          try { await client.setAcceptingSessions(false); await localChat(options, request.message); request.resolve(); }
+          catch (error) { options.events?.({ kind: 'error', scope: 'local', text: error instanceof Error ? error.message : 'Private turn failed' }); request.reject(error); }
+          finally { busy = false; if (!client.signal.aborted) await client.setAcceptingSessions(true); }
+          continue;
+        }
         let session: AgentSession;
         try { session = await client.open(request.peer); }
         catch (error) {

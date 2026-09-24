@@ -1,3 +1,4 @@
+import { localChat } from './local-chat.js';
 import { randomUUID } from 'node:crypto';
 import type { EventSink } from './agent-events.js';
 import { join } from 'node:path';
@@ -15,6 +16,7 @@ export interface ConversationOptions {
   runtime: RuntimeAdapter;
   log: (message: string) => void;
   events?: EventSink;
+  localInput?: import('./local-input.js').LocalInput;
   askUser?: (sessionId: string, question: string | null, signal: AbortSignal) => Promise<string>;
 }
 const terminal = (session: AgentSession) => ['closed', 'expired'].includes(session.snapshot.state);
@@ -102,11 +104,10 @@ export async function converse(options: ConversationOptions, session: AgentSessi
   emit({ kind: 'session', text: 'Connected' });
   emit({ kind: 'waiting_peer', text: 'Waiting for incoming messages' });
   log(`Session ${session.id}: connected.`);
-  await session.run({
-    async onMessages(messages, boundSession, signal) {
+  const onMessages = async (messages: readonly SessionMessage[], boundSession: AgentSession, signal: AbortSignal, answer?: string) => {
       for (const message of messages) emit({ kind: 'received', sequence: message.sequence,
         text: `${message.sender_type === 'human' ? 'Human' : message.sender_agent_id}: ${message.content}` });
-      let answer: string | undefined;
+
       do {
         const turnId = randomUUID();
         const progress: EventSink = event => emit({ turnId, threadId: conversation.threadId, ...event });
@@ -142,7 +143,26 @@ export async function converse(options: ConversationOptions, session: AgentSessi
         progress({ kind: 'local_input', text: 'Local answer supplied' });
         messages = []; // The previous batch already belongs to this conversation.
       } while (!signal.aborted);
-    },
+    };
+  await session.run({
+    onMessages,
+    ...(options.localInput ? { localInput: {
+      next: (signal: AbortSignal) => options.localInput!.next(signal),
+      handle: async (input: string, boundSession: AgentSession, signal: AbortSignal) => {
+        const instruction = JSON.parse(input) as { kind: 'private' | 'steer'; message: string };
+        if (instruction.kind === 'private') {
+          try { await localChat(options, instruction.message, signal); }
+          catch (error) {
+            if (signal.aborted) throw error;
+            options.events?.({ kind: 'error', scope: 'local', text: error instanceof Error ? error.message : 'Private turn failed' });
+          }
+          return;
+        }
+        const answer = instruction.message;
+        emit({ kind: 'local_directive', text: answer });
+        await onMessages([], boundSession, signal, answer);
+      },
+    } } : {}),
     // RuntimeAdapter.run resolves/rejects only after its child has exited. The SDK
     // invokes stop after onMessages has settled, before acknowledging capacity.
     async stop() { emit({ kind: 'closed', text: session.snapshot.close_reason ?? 'Conversation processing stopped' }); },

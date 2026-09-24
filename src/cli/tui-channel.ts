@@ -40,13 +40,17 @@ export function attachTuiControls(controls?: AgentControls) {
     if (message?.type !== 'control' || typeof message.id !== 'string') return;
     if (message.action === 'peers' && controls.peers) {
       void controls.peers(message.after).then(result => sendTui({ type: 'peers_result', id: message.id, ...result }),
-        error => sendTui({ type: 'peers_result', id: message.id, error: error instanceof Error ? error.message : 'Could not load friends.' }));
+        error => sendTui({ type: 'peers_result', id: message.id, error: error instanceof Error ? error.message : 'Could not load friends.', code: (error as { code?: string })?.code }));
       return;
     }
-    const action = message.action === 'open' && typeof message.peer === 'string' && typeof message.message === 'string'
+    const action = message.action === 'steer' && typeof message.sessionId === 'string' && typeof message.message === 'string' && controls.steer
+      ? () => controls.steer!(message.sessionId, message.message)
+      : message.action === 'chat' && typeof message.message === 'string' && controls.chat
+      ? () => controls.chat!(message.message)
+      : message.action === 'open' && typeof message.peer === 'string' && typeof message.message === 'string'
       ? () => controls.open(message.peer, message.message)
       : message.action === 'close' && typeof message.sessionId === 'string' ? () => controls.close(message.sessionId) : undefined;
-    if (action) void action().then(() => sendTui({ type: 'control_result', id: message.id, ok: true }),
+    if (action) void action().then(() => sendTui({ type: 'control_result', id: message.id, action: message.action, ok: true }),
       error => sendTui({ type: 'control_result', id: message.id, ok: false, error: error instanceof Error ? error.message : 'Command failed.' }));
   };
   process.on('message', controlHandler); process.channel?.unref();

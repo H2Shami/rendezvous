@@ -8,7 +8,7 @@ import { parseCommand, tuiActions } from '../src/cli/tui-actions.js';
 import { textWidth } from '../src/cli/tui-screen.js';
 
 test('workspace offers all CLI workflows and parses advanced arguments without a shell', () => {
-  for (const id of ['setup', 'start', 'inspect', 'status', 'create', 'join', 'owner', 'agents', 'rooms', 'config', 'open', 'close', 'run']) {
+  for (const id of ['setup', 'start', 'inspect', 'create', 'join', 'owner', 'agents', 'rooms', 'config', 'open', 'close', 'run']) {
     assert.ok(tuiActions.some(a => a.id === id), id);
   }
   assert.deepEqual(parseCommand(`rendezvous join --task 'literal $(whoami)' --name "two words"`), ['join', '--task', 'literal $(whoami)', '--name', 'two words']);
@@ -36,6 +36,7 @@ test('workspace palette, forms, navigation and cancellation restore the terminal
   const output = Object.assign(new Writable({ write(chunk, _encoding, done) { screen += chunk; done(); } }), { isTTY: true, columns: 120, rows: 36 });
   const app = new RendezvousTui('unused', input as unknown as typeof process.stdin, output as unknown as typeof process.stderr);
   app.refresh = async () => {};
+  (app as any).refreshAgentStatuses = async () => {};
   const running = app.run(); await new Promise(resolve => setImmediate(resolve));
   input.emit('keypress', '/', {}); input.emit('keypress', 'set up', {});
   input.emit('keypress', '\r', { name: 'return' });
@@ -122,4 +123,19 @@ test('friend picker keeps UUIDs as values, disables offline choices, ignores can
   assert.deepEqual(app.form!.action.fields!.map(field => field.key), ['message']);
   (app as any).receivePeers(app.jobs[0], { id: sent[0].id, peers: [] });
   assert.equal(app.form!.values.peer, 'peer-two');
+});
+
+
+test('agent cards show availability and the workspace renders an explicit private composer', () => {
+  const app = new RendezvousTui('unused');
+  app.profiles = [{ version: 1, name: 'reviewer', agentId: 'id', origin: 'https://relay.example', agent: 'codex', workspace: '/tmp', instructions: 'Review', credentialFile: 'credential' }];
+  app.view = 'agents'; app.agentStatuses.set('reviewer', 'available');
+  assert.match(app.render(120, 36, false).join('\n'), /available.*codex/);
+  assert.ok(!tuiActions.some(a => a.id === 'status'));
+  const model = new AgentTuiModel('reviewer');
+  model.add({ kind: 'local_reply', scope: 'local', time: new Date().toISOString(), text: 'Private answer' });
+  app.jobs.push({ id: 'job', title: 'Agent reviewer', model, output: [], running: true, controls: true, child: {} as ChildProcess });
+  app.view = 'job'; app.selectedJob = 'job';
+  const screen = app.render(120, 36, false).join('\n');
+  assert.match(screen, /PRIVATE CHAT/); assert.match(screen, /Private answer/); assert.match(screen, /Steer session/);
 });
