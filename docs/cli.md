@@ -354,3 +354,20 @@ The optional live Codex test uses two model turns and an isolated conversation:
 ```sh
 RENDEZVOUS_CODEX_SMOKE=1 node --import tsx --test test/cli-codex-smoke.test.ts
 ```
+
+### Local execution diagnostics
+
+`rendezvous agent start NAME --events` writes JSON lines to stdout while existing
+status logs stay on stderr. Events distinguish received message sequences, harness
+turns and thread IDs, tool activity (where exposed by the harness), outbound sends,
+intentional silence, waiting for a peer or local input, errors and closure. This
+adds observation only: it does not change prompts, permissions or completion rules.
+
+Display copies are bounded and terminal-control characters are removed. Known
+runtime/environment secrets and recognizable API keys are redacted, but arbitrary
+model/tool output may still contain private workspace content. Treat captured logs
+as local private diagnostics. They are not uploaded to the room or stored in the
+journal. Slow output drops diagnostic events with a notice instead of holding up
+heartbeats or model work. Observers must not perform synchronous blocking work.
+Provider support varies: unsupported event types are omitted; no internal reasoning
+is inferred. Raw provider events are never dumped.

@@ -9,6 +9,7 @@ import { AgentClient, AGENT_FRIENDS_PROTOCOL as protocol } from '../src/client/i
 import { AgentIdentityService } from '../src/agents/identity.js';
 import { OwnerService } from '../src/owners/service.js';
 import { AgentJournal } from '../src/cli/agent-journal.js';
+import type { EventInput } from '../src/cli/agent-events.js';
 import { converse } from '../src/cli/agent-conversations.js';
 import { fixture, waitUntil } from './helpers.js';
 import { uuid, secret } from '../src/validation.js';
@@ -191,7 +192,7 @@ async function eventually(check: () => Promise<boolean>) {
 test('SDK messages and human messages resume one CLI conversation; DONE and remote close free the listener', { timeout: 20000 }, async () => {
   const f = await conversationFixture();
   try {
-    const receiver = f.start(); await running(receiver); await f.client.connect();
+    const receiver = f.start('receiver', ['--events']); await running(receiver); await f.client.connect();
     const session = await f.openSession();
     for (const text of ['one', 'two']) {
       await session.send(text);
@@ -218,6 +219,13 @@ test('SDK messages and human messages resume one CLI conversation; DONE and remo
     assert.deepEqual(JSON.parse(await readFile(join(f.home, 'agents', 'receiver', 'journal.json'), 'utf8')).sessions, {});
     assert.ok(!(await readdir(join(f.home, 'agents', 'receiver'))).some(name => name.startsWith('conversation-')));
     assert.equal(receiver.child.exitCode, null);
+    const output = await receiver.stop();
+    const events = output.stdout.trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(events.some(e => e.kind === 'received' && e.text.includes('human note')));
+    assert.ok(events.some(e => e.kind === 'turn_started' && e.turnId && e.sessionId === session.id));
+    assert.ok(events.some(e => e.kind === 'reply_sent' && e.sequence));
+    assert.ok(events.some(e => e.kind === 'closed'));
+    assert.ok(!output.stdout.includes(f.kb.api_key));
   } finally { await f.cleanup(); }
 });
 
@@ -290,10 +298,10 @@ test('local NEEDS_USER input resumes the same conversation and sends the approve
     await receiver.connect(); await f.client.connect();
     const outgoing = await f.client.open(f.b.id), offers = receiver.offers();
     const incoming = (await offers.next()).value!; await offers.return(undefined);
-    let turns = 0, questions = 0;
+    let turns = 0, questions = 0; const events: EventInput[] = [];
     task = converse({ client: receiver, directory: join(f.home, 'agents', 'receiver'),
       profile: { version: 1, name: 'receiver', agentId: f.b.id, origin: f.base, agent: 'codex', workspace: f.home, instructions: 'Local boundaries', credentialFile: 'credential' },
-      log() {}, async askUser(id, question) { assert.equal(id, incoming.id); assert.equal(question, 'Which scope?'); questions++; return 'Only the API'; },
+      events: event => { events.push(event); }, log() {}, async askUser(id, question) { assert.equal(id, incoming.id); assert.equal(question, 'Which scope?'); questions++; return 'Only the API'; },
       runtime: { async run(prompt, thread, _signal, onThread) {
         turns++;
         if (turns === 1) { assert.equal(thread, undefined); await onThread('local-thread'); return { message: 'Which scope?', status: 'NEEDS_USER' }; }
@@ -303,6 +311,9 @@ test('local NEEDS_USER input resumes the same conversation and sends the approve
     }, incoming);
     await eventually(async () => (await outgoing.status()).state === 'active'); await outgoing.send('Please review');
     await task; assert.equal(turns, 2); assert.equal(questions, 1);
+    assert.ok(events.some(e => e.kind === 'waiting_user'));
+    assert.ok(events.some(e => e.kind === 'local_input'));
+    assert.ok(events.findIndex(e => e.kind === 'reply_sent') < events.findIndex(e => e.kind === 'waiting_user'));
     const page = await outgoing.read({ wait: 0 });
     assert.deepEqual(page.messages.map(m => m.content), ['Please review', 'Which scope?', 'Approved reply']);
     await outgoing.stopped();

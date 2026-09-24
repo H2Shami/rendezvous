@@ -129,6 +129,7 @@ async function main() {
         agent: { type: "string" },
         "agent-id": { type: "string" },
         takeover: { type: "boolean" },
+        events: { type: "boolean" },
         "close-sessions": { type: "boolean" },
         peer: { type: "string" },
         message: { type: "string" },
@@ -184,7 +185,7 @@ async function main() {
     rooms: ["json"],
     owner: ["room-file", "json"],
     config: ["json", "no-input"],
-    agent: ["agent-id", "agent", "server", "workspace", "task", "objective-file", "json", "no-input", "takeover", "close-sessions", "peer", "message", "turn-timeout"],
+    agent: ["agent-id", "agent", "server", "workspace", "task", "objective-file", "json", "no-input", "takeover", "close-sessions", "peer", "message", "turn-timeout", "events"],
   };
   if (!allowed[command])
     throw new UsageError(
@@ -237,7 +238,7 @@ async function main() {
       const actionFlags: Record<string, string[]> = {
         setup: ['agent-id', 'agent', 'server', 'workspace', 'task', 'objective-file', 'json', 'no-input'],
         list: ['json', 'no-input'], show: ['json', 'no-input'], status: ['json', 'no-input'],
-        start: ['takeover', 'no-input', 'close-sessions', 'peer', 'message', 'turn-timeout'],
+        start: ['takeover', 'no-input', 'close-sessions', 'peer', 'message', 'turn-timeout', 'events'],
       };
       if (!actionFlags[action] || rest.length !== (action === 'list' ? 1 : 2))
         throw new UsageError('Use agent setup NAME, agent list, agent show NAME, agent status NAME, or agent start NAME.');
@@ -254,6 +255,7 @@ async function main() {
         if (v.peer && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v.peer)) throw new UsageError('--peer must be an agent UUID.');
         if (v.message !== undefined && (!v.message.trim() || Buffer.byteLength(v.message) > 32768)) throw new UsageError('--message must contain 1–32768 bytes.');
         await startAgent(name, { takeover: v.takeover, signal: controller.signal, log,
+          events: v.events ? event => new Promise<void>(resolve => { process.stdout.write(JSON.stringify(event) + '\n', () => resolve()); }) : undefined,
           closeSessions: v['close-sessions'], peer: v.peer, message: v.message,
           turnTimeout: integer(v['turn-timeout'], 300, '--turn-timeout'),
           askUser: prompts.interactive ? async (sessionId, question, signal) => {

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import type { EventSink } from './agent-events.js';
 import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { AgentClient, AgentClientError, type AgentSession, type SessionMessage } from '../client/index.js';
@@ -12,6 +14,7 @@ export interface ConversationOptions {
   profile: AgentProfile;
   runtime: RuntimeAdapter;
   log: (message: string) => void;
+  events?: EventSink;
   askUser?: (sessionId: string, question: string | null, signal: AbortSignal) => Promise<string>;
 }
 const terminal = (session: AgentSession) => ['closed', 'expired'].includes(session.snapshot.state);
@@ -94,21 +97,39 @@ export async function converse(options: ConversationOptions, session: AgentSessi
     if (terminal(session)) { await forget(options, session); return; }
     await session.send(openingMessage);
   }
+  const emit: EventSink = event => options.events?.({ sessionId: session.id, bindingId: session.bindingId, ...event });
+  emit({ kind: 'session', text: 'Connected' });
+  emit({ kind: 'waiting_peer', text: 'Waiting for incoming messages' });
   log(`Session ${session.id}: connected.`);
   await session.run({
     async onMessages(messages, boundSession, signal) {
+      for (const message of messages) emit({ kind: 'received', sequence: message.sequence,
+        text: `${message.sender_type === 'human' ? 'Human' : message.sender_agent_id}: ${message.content}` });
       let answer: string | undefined;
       do {
+        const turnId = randomUUID();
+        const progress: EventSink = event => emit({ turnId, threadId: conversation.threadId, ...event });
+        progress({ kind: 'turn_started', text: 'Dispatching to harness' });
         const result = await runtime.run(conversationPrompt(options.profile, boundSession, messages, answer, conversation.openingMessage), conversation.threadId, signal, async threadId => {
           if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/.test(threadId)) throw new Error('Invalid harness conversation ID.');
           conversation.threadId = threadId;
           await writePrivateJson(path, conversation);
+          progress({ kind: 'thread', threadId, text: 'Harness conversation attached' });
+        }, progress).catch(error => {
+          progress({ kind: 'error', text: signal.aborted ? 'Harness interrupted' : 'Harness turn failed; inspect diagnostics and saved transcript' });
+          throw error;
         });
+        progress({ kind: 'turn_finished', text: result.status });
         signal.throwIfAborted();
-        if (result.message !== null) await boundSession.send(result.message, { signal });
+        if (result.message !== null) {
+          progress({ kind: 'reply_sending', text: result.message });
+          const sent = await boundSession.send(result.message, { signal });
+          progress({ kind: 'reply_sent', sequence: sent.sequence, text: result.message });
+        } else progress({ kind: 'silent', text: 'Processed messages; harness chose no reply' });
         log(`Session ${session.id}: ${result.status}${result.message ? '; reply sent' : ''}.`);
         if (result.status === 'DONE') { await boundSession.close(); return; }
-        if (result.status !== 'NEEDS_USER') return;
+        if (result.status !== 'NEEDS_USER') { progress({ kind: 'waiting_peer', text: 'Waiting for incoming messages' }); return; }
+        progress({ kind: 'waiting_user', text: result.message ?? 'Local input requested' });
         log(`Session ${session.id}: waiting for local input; remote messages cannot approve actions.`);
         if (!options.askUser) {
           await new Promise<void>(resolve => {
@@ -117,12 +138,13 @@ export async function converse(options: ConversationOptions, session: AgentSessi
           signal.throwIfAborted();
         }
         answer = await options.askUser!(session.id, result.message, signal);
+        progress({ kind: 'local_input', text: 'Local answer supplied' });
         messages = []; // The previous batch already belongs to this conversation.
       } while (!signal.aborted);
     },
     // RuntimeAdapter.run resolves/rejects only after its child has exited. The SDK
     // invokes stop after onMessages has settled, before acknowledging capacity.
-    async stop() {},
+    async stop() { emit({ kind: 'closed', text: session.snapshot.close_reason ?? 'Conversation processing stopped' }); },
   });
   if (!client.signal.aborted) { await forget(options, session); log(`Session ${session.id}: ended; ready for another session.`); }
 }
