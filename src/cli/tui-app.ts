@@ -8,10 +8,10 @@ import { listProfiles, type AgentProfile } from './profiles.js';
 import { ownedRooms, readConfig, type Config, type LocalRoom } from './config.js';
 import { displayText, type ExecutionEvent } from './agent-events.js';
 import { AgentTuiModel } from './agent-tui.js';
-import { palette as p, TuiScreen } from './tui-screen.js';
+import { agentStatusColor, palette as p, TuiScreen } from './tui-screen.js';
 import { tuiActions, type TuiAction } from './tui-actions.js';
 
-interface Choice { id: string; title: string; detail: string; disabled?: boolean }
+interface Choice { id: string; title: string; detail: string; status?: string; disabled?: boolean }
 interface Picker { title: string; rows: Choice[]; choose: (row: Choice) => void; request?: string; loading?: boolean; error?: string }
 interface Prompt { id: string; label: string; hint: string; secret: boolean; defaultValue?: string }
 interface Job { id: string; title: string; child: ChildProcess; model: AgentTuiModel; output: string[]; running: boolean; code?: number | null; prompt?: Prompt; controls?: boolean; chatRequest?: string }
@@ -225,7 +225,7 @@ export class RendezvousTui {
       this.changed(); return;
     }
     const rows: Choice[] = [...previous, ...message.peers.map((peer: any) => ({ id: peer.id,
-      title: this.safe(peer.display_name), detail: `${peer.availability} · ${peer.id}`, disabled: peer.availability !== 'available' }))];
+      title: this.safe(peer.display_name), detail: `${peer.availability} · ${peer.id}`, status: peer.availability, disabled: peer.availability !== 'available' }))];
     rows.sort((a, b) => Number(a.disabled) - Number(b.disabled) || a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
     if (message.next_cursor) rows.push({ id: 'more', title: 'Load more friends', detail: 'Search includes the loaded pages' });
     this.pick(`Friends of ${job.model.profile}`, rows, row => {
@@ -445,7 +445,9 @@ export class RendezvousTui {
       if (!entries.length) { s.text(x, 11, 'Nothing here yet.', p.secondary, true); s.text(x, 13, 'Press / to get started.', p.muted); }
       const selected = entries.length ? this.selected % entries.length : 0, page = Math.max(1, Math.floor((height - 14) / 4));
       const start = Math.floor(selected / page) * page;
-      entries.slice(start, start + page).forEach(([title, detail, meta], i) => { const y = 10 + i * 4, active = start + i === selected; this.hit(x, y, mainWidth, 3, () => { this.selected = start + i; this.openSelected(); }); s.rect(x, y, mainWidth, 3, active ? p.raised : p.panel); if (active) s.text(x, y, '▌', p.primary); s.text(x + 2, y, title, active ? p.secondary : p.text, true, mainWidth - 4); s.text(x + 2, y + 1, detail, p.muted, false, mainWidth - 4); s.text(x + 2, y + 2, meta, p.muted, false, mainWidth - 4); });
+      entries.slice(start, start + page).forEach(([title, detail, meta], i) => { const y = 10 + i * 4, active = start + i === selected; this.hit(x, y, mainWidth, 3, () => { this.selected = start + i; this.openSelected(); }); s.rect(x, y, mainWidth, 3, active ? p.raised : p.panel); if (active) s.text(x, y, '▌', p.primary); s.text(x + 2, y, title, active ? p.secondary : p.text, true, mainWidth - 4); const hasStatus = this.view === 'agents';
+        if (hasStatus) s.text(x + 2, y + 1, '●', agentStatusColor(this.agentStatuses.get(this.profiles[start + i].name) ?? 'checking…'));
+        s.text(x + (hasStatus ? 4 : 2), y + 1, detail, p.muted, false, mainWidth - (hasStatus ? 6 : 4)); s.text(x + 2, y + 2, meta, p.muted, false, mainWidth - 4); });
     }
     s.rect(0, height - 2, width, 2, p.panel);
     s.text(2, height - 2, this.notice || (sidebar ? 'click or ↑↓ select   enter open   wheel scroll   / commands' : '1 home  2 agents  3 rooms  4 work  5 settings  / commands'), this.notice ? p.secondary : p.muted, false, width - 4);
@@ -469,7 +471,8 @@ export class RendezvousTui {
         this.hit(x + 1, line, w - 2, 2, () => { this.selected = start + i; this.key(undefined, { name: 'return' }); });
         if (active) s.rect(x + 1, line, w - 2, 2, p.panel);
         s.text(x + 2, line, `${active ? '› ' : '  '}${row.title}`, row.disabled ? p.muted : p.secondary, active, w - 4);
-        s.text(x + 4, line + 1, row.detail, p.muted, false, w - 6);
+        if (row.status) s.text(x + 4, line + 1, '●', agentStatusColor(row.status));
+        s.text(x + (row.status ? 6 : 4), line + 1, row.detail, p.muted, false, w - (row.status ? 8 : 6));
       });
       s.text(x + 2, y + h - 1, '↑↓ select · type to search · enter choose · esc cancel', p.muted, false, w - 4);
     } else if (this.form) {

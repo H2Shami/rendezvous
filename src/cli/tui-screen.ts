@@ -1,6 +1,19 @@
 import { displayText } from './agent-events.js';
 
 export const palette = { background: '#111114', panel: '#1a1a20', raised: '#25232b', border: '#39303a', primary: '#df0712', secondary: '#fda4af', text: '#eee9ed', muted: '#9d929d', success: '#b7d3ac' };
+
+/** Keep the status label visible alongside the dot, including without color. */
+export function agentStatusColor(status: string): string {
+  switch (status) {
+    case 'available': return palette.success;
+    case 'busy': return '#fbbf24';
+    case 'paused': return palette.secondary;
+    case 'offline': return palette.muted;
+    case 'checking…': return '#93c5fd';
+    default: return palette.primary;
+  }
+}
+
 type Cell = { text: string; fg: string; bg: string; bold: boolean };
 function wide(char: string) { const c = char.codePointAt(0)!; return /\p{Extended_Pictographic}/u.test(char) || (c >= 0x1100 && (c <= 0x115f || c >= 0x2e80 && c <= 0xa4cf || c >= 0xac00 && c <= 0xd7a3 || c >= 0xf900 && c <= 0xfaff || c >= 0xff01 && c <= 0xff60)); }
 export function textWidth(text: string) { return [...text].reduce((n, c) => n + (/\p{Mark}/u.test(c) ? 0 : wide(c) ? 2 : 1), 0); }
