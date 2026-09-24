@@ -42,23 +42,29 @@ test('workspace palette, forms, navigation and cancellation restore the terminal
   assert.equal(app.form?.action.id, 'setup');
   input.emit('keypress', 'reviewer', {}); assert.equal(app.form?.values.profile, 'reviewer');
   input.emit('keypress', undefined, { name: 'escape' });
-  input.emit('keypress', '2', {}); assert.equal(app.view, 'agents');
+  app.render(120, 36);
+  input.write('\x1b[<0;5;10M'); assert.equal(app.view, 'agents');
+  assert.equal(app.input, '', 'mouse report cannot become typed input');
+  app.render(120, 36);
+  input.write('\x1b[<65;40;12M'); assert.equal(app.selected, 3);
   const sent: any[] = [];
   const model = new AgentTuiModel('reviewer'); model.session = 'original-session';
   app.jobs.push({ id: 'reviewer', title: 'Agent start reviewer', child: { send: (message: any) => sent.push(message) } as unknown as ChildProcess, model, output: [], running: true, controls: true });
   app.selectedJob = 'reviewer';
   app.activate(tuiActions.find(a => a.id === 'close')!);
   model.session = 'new-session';
-  input.emit('keypress', 'yes', {}); input.emit('keypress', '\r', { name: 'return' });
+  input.emit('keypress', undefined, { name: 'right' }); input.emit('keypress', '\r', { name: 'return' });
   assert.equal(sent[0].sessionId, 'original-session', 'confirmation stays bound to the original session');
   app.jobs[0].running = false;
   output.columns = 40; output.emit('resize');
   app.activate(tuiActions.find(a => a.id === 'quit')!);
-  input.emit('keypress', 'yes', {}); input.emit('keypress', '\r', { name: 'return' });
+  input.emit('keypress', undefined, { name: 'right' }); input.emit('keypress', '\r', { name: 'return' });
   await running;
   assert.equal(input.isRaw, false);
   assert.ok(screen.includes('\x1b[?1049h') && screen.endsWith('\x1b[?1049l'));
   assert.equal(output.listenerCount('resize'), 0);
+  assert.ok(screen.includes('\x1b[?1000h') && screen.includes('\x1b[?1000l'));
+  assert.equal(input.listenerCount('data'), 0);
 });
 
 test('TUI selection depends on terminal capability, preserves explicit plain and JSON modes', () => {
@@ -82,4 +88,38 @@ test('TUI separates transcript and execution, shows silent processing, bounds hi
   assert.ok(model.execution.some(x => x.includes('No reply chosen')));
   for (let i = 0; i < 1000; i++) model.log(String(i));
   assert.equal(model.execution.length, 200);
+});
+
+test('mouse input separates fragmented reports from keyboard input', async () => {
+  const { TerminalInput } = await import('../src/cli/tui-input.js');
+  const reports: unknown[] = [], typed: string[] = [];
+  const router = new TerminalInput((...args) => reports.push(args));
+  router.keyboard.on('keypress', text => { if (text) typed.push(text); });
+  router.feed('a\x1b[<0;'); router.feed('4;8M\x1b[<0;4;8m'); router.feed('b\x1b[<65;4;8M');
+  assert.deepEqual(reports, [[0, 3, 7, false], [0, 3, 7, true], [65, 3, 7, false]]);
+  assert.equal(typed.join(''), 'ab'); router.close();
+});
+
+test('friend picker keeps UUIDs as values, disables offline choices, ignores cancelled responses', () => {
+  const app = new RendezvousTui('unused');
+  const sent: any[] = [];
+  const model = new AgentTuiModel('reviewer');
+  app.jobs.push({ id: 'job', title: 'Agent start reviewer', model, output: [], running: true, controls: true,
+    child: { send: (message: any) => sent.push(message) } as unknown as ChildProcess });
+  app.view = 'job'; app.selectedJob = 'job';
+  app.activate(tuiActions.find(a => a.id === 'open')!);
+  assert.equal(sent[0].action, 'peers');
+  // Exercise the same validated IPC-result boundary used by the child listener.
+  (app as any).receivePeers(app.jobs[0], { id: sent[0].id, next_cursor: null, peers: [
+    { id: 'peer-one', display_name: 'Reviewer', availability: 'offline' },
+    { id: 'peer-two', display_name: 'Reviewer', availability: 'available' },
+  ] });
+  assert.equal(app.picker!.rows.find(row => row.id === 'peer-one')!.disabled, true);
+  assert.equal(app.picker!.rows[0].id, 'peer-two', 'available contacts come first');
+  assert.match(app.render(120, 36, false).join('\n'), /offline.*peer-one/);
+  app.picker!.choose(app.picker!.rows[0]);
+  assert.equal(app.form!.values.peer, 'peer-two');
+  assert.deepEqual(app.form!.action.fields!.map(field => field.key), ['message']);
+  (app as any).receivePeers(app.jobs[0], { id: sent[0].id, peers: [] });
+  assert.equal(app.form!.values.peer, 'peer-two');
 });

@@ -1,5 +1,5 @@
 import { fork, type ChildProcess } from 'node:child_process';
-import { emitKeypressEvents } from 'node:readline';
+import { TerminalInput } from './tui-input.js';
 import { randomUUID } from 'node:crypto';
 import { colorEnabled } from './ui.js';
 import { listProfiles, type AgentProfile } from './profiles.js';
@@ -9,6 +9,8 @@ import { AgentTuiModel } from './agent-tui.js';
 import { palette as p, TuiScreen } from './tui-screen.js';
 import { tuiActions, type TuiAction } from './tui-actions.js';
 
+interface Choice { id: string; title: string; detail: string; disabled?: boolean }
+interface Picker { title: string; rows: Choice[]; choose: (row: Choice) => void; request?: string; loading?: boolean }
 interface Prompt { id: string; label: string; hint: string; secret: boolean; defaultValue?: string }
 interface Job { id: string; title: string; child: ChildProcess; model: AgentTuiModel; output: string[]; running: boolean; code?: number | null; prompt?: Prompt; controls?: boolean }
 type View = 'home' | 'agents' | 'rooms' | 'settings' | 'jobs' | 'job';
@@ -31,8 +33,20 @@ export class RendezvousTui {
   input = '';
   paletteOpen = false;
   form?: Form;
+  picker?: Picker;
   notice = '';
   scroll = 0;
+  private inputRouter?: TerminalInput;
+  private hits: { x: number; y: number; w: number; h: number; action: () => void }[] = [];
+  private hit(x: number, y: number, w: number, h: number, action: () => void) { this.hits.push({ x, y, w, h, action }); }
+  private mouse = (button: number, x: number, y: number, released: boolean) => {
+    if (released || this.closing) return;
+    if (button === 64 || button === 65) {
+      if (this.view === 'job' && !this.picker && !this.paletteOpen && !this.form) this.scroll = Math.max(0, Math.min(10000, this.scroll + (button === 64 ? 3 : -3)));
+      else for (let i = 0; i < 3; i++) this.key(undefined, { name: button === 64 ? 'up' : 'down' });
+    } else if (button === 0) this.hits.findLast(hit => x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h)?.action();
+    this.changed();
+  };
   private timer?: NodeJS.Timeout;
   private dirty = true;
   private writing = false;
@@ -56,20 +70,22 @@ export class RendezvousTui {
   async run(initial?: string[]) {
     await this.refresh();
     this.oldRaw = !!this.stdin.isRaw; this.wasFlowing = this.stdin.readableFlowing === true;
-    emitKeypressEvents(this.stdin); this.stdin.setRawMode(true); this.stdin.resume();
+    this.inputRouter = new TerminalInput(this.mouse); this.inputRouter.keyboard.on('keypress', this.key);
+    this.stdin.on('data', this.inputRouter.feed); this.stdin.setRawMode(true); this.stdin.resume();
     this.stdin.on('keypress', this.key); this.stderr.on('resize', this.resize);
     process.once('SIGINT', this.requestQuit); process.once('SIGTERM', this.requestQuit);
-    this.stderr.write('\x1b[?1049h\x1b[?25l\x1b[?7l');
+    this.stderr.write('\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1006h');
     this.timer = setInterval(() => this.draw(), 80);
     try {
       const done = new Promise<void>(resolve => { this.done = resolve; });
       if (initial?.length) this.launch(initial);
       this.draw(); await done;
     } finally {
+      this.stdin.removeListener('data', this.inputRouter.feed); this.inputRouter.close();
       clearInterval(this.timer); this.stdin.removeListener('keypress', this.key); this.stderr.removeListener('resize', this.resize);
       process.removeListener('SIGINT', this.requestQuit); process.removeListener('SIGTERM', this.requestQuit);
       this.stdin.setRawMode(this.oldRaw); if (!this.wasFlowing) this.stdin.pause();
-      this.stderr.write('\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l');
+      this.stderr.write('\x1b[?1000l\x1b[?1006l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l');
     }
   }
   private resize = () => this.changed();
@@ -111,6 +127,7 @@ export class RendezvousTui {
         // A background request is announced, never allowed to steal typed input.
         this.notice = `${job.title} needs your input. Select its process to answer.`;
       } else if (message?.type === 'prompt_done' && job.prompt?.id === message.id) { job.prompt = undefined; if (this.selectedJob === job.id && !this.form && !this.paletteOpen) this.input = ''; }
+      else if (message?.type === 'peers_result') this.receivePeers(job, message);
       else if (message?.type === 'controls') job.controls = !!message.available;
       else if (message?.type === 'control_result') this.notice = message.ok ? 'Action completed.' : this.safe(message.error ?? 'Action failed.');
       this.changed();
@@ -123,18 +140,68 @@ export class RendezvousTui {
     });
     this.changed();
   }
-  private selectView(view: View) { this.view = view; this.selected = 0; this.input = ''; this.form = undefined; this.paletteOpen = false; this.scroll = 0; this.changed(); }
+  private pick(title: string, rows: Choice[], choose: (row: Choice) => void) {
+    this.form = undefined; this.paletteOpen = false; this.input = ''; this.selected = 0;
+    this.picker = { title, rows, choose }; this.changed();
+  }
+  private contact(job: Job, after?: string, previous: Choice[] = []) {
+    if (!job.running || !job.controls) { this.notice = 'That listener is no longer online.'; this.changed(); return; }
+    this.pick(`Friends of ${job.model.profile}`, previous, () => {});
+    const id = randomUUID(); this.picker!.request = id; this.picker!.loading = true;
+    job.child.send({ type: 'control', id, action: 'peers', after });
+  }
+  private receivePeers(job: Job, message: any) {
+    if (!this.picker || this.picker.request !== message.id) return;
+    const previous = this.picker.rows.filter(row => row.id !== 'more');
+    if (message.error) {
+      this.picker.loading = false; this.notice = this.safe(message.error) + ' Update the backend if friend discovery is unavailable; Esc cancels.'; this.changed(); return;
+    }
+    const rows: Choice[] = [...previous, ...message.peers.map((peer: any) => ({ id: peer.id,
+      title: this.safe(peer.display_name), detail: `${peer.availability} · ${peer.id}`, disabled: peer.availability !== 'available' }))];
+    rows.sort((a, b) => Number(a.disabled) - Number(b.disabled) || a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+    if (message.next_cursor) rows.push({ id: 'more', title: 'Load more friends', detail: 'Search includes the loaded pages' });
+    this.pick(`Friends of ${job.model.profile}`, rows, row => {
+      if (row.id === 'more') { this.contact(job, message.next_cursor, rows); return; }
+      this.selectedJob = job.id; this.view = 'job'; this.pane = 'conversation';
+      this.activate({ ...tuiActions.find(a => a.id === 'open')!, description: `Message ${row.title} from ${job.model.profile}` }, { peer: row.id });
+    });
+    if (!rows.length) this.notice = 'No permitted friends yet. Add a friend and enable outbound/inbound access in the dashboard.';
+  }
+  private pickerRows() { const query = this.input.toLowerCase(); return this.picker!.rows.filter(row => row.id === 'more' || `${row.title} ${row.detail}`.toLowerCase().includes(query)); }
+  private selectView(view: View) { this.view = view; this.selected = 0; this.input = ''; this.form = undefined; this.picker = undefined; this.paletteOpen = false; this.scroll = 0; this.changed(); }
   private actions() { const query = this.input.replace(/^\//, '').toLowerCase(); return tuiActions.filter(a => `${a.id} ${a.title} ${a.description}`.toLowerCase().includes(query)); }
   activate(action: TuiAction, values: Record<string, string> = {}) {
-    this.paletteOpen = false; this.input = ''; this.selected = 0; this.notice = '';
+    this.paletteOpen = false; this.picker = undefined; this.input = ''; this.selected = 0; this.notice = '';
+    if (action.id === 'open' && !values.peer) {
+      const listeners = this.jobs.filter(j => j.running && j.controls);
+      const selected = this.view === 'job' ? this.job() : undefined;
+      if (selected?.controls && selected.running) this.contact(selected);
+      else if (listeners.length === 1) this.contact(listeners[0]);
+      else this.pick('Which agent should make contact?', listeners.map(j => ({ id: j.id, title: j.model.profile, detail: j.model.state })), row => this.contact(listeners.find(j => j.id === row.id)!));
+      if (!listeners.length) this.notice = 'Start a saved agent first, then choose Contact an agent.';
+      return;
+    }
+    if (['start', 'inspect', 'status'].includes(action.id) && !values.profile) {
+      this.pick('Choose a saved agent', this.profiles.map(profile => ({ id: profile.name, title: profile.name, detail: `${profile.agent} · ${profile.origin}` })), row => this.activate(action, { profile: row.id }));
+      if (!this.profiles.length) this.notice = 'No saved agents. Choose Set up an agent first.';
+      return;
+    }
+    if (['join', 'owner'].includes(action.id) && values.room === undefined) {
+      const rooms = this.rooms.map(room => ({ id: room.session_id, title: `Room ${room.session_id.slice(0, 8)}`, detail: `Expires ${room.expires_at}` }));
+      if (action.id === 'join') rooms.unshift({ id: '', title: 'Use an invitation', detail: 'Enter a private invitation link' });
+      this.pick('Choose a room', rooms, row => this.activate(action, { room: row.id })); return;
+    }
+    if (values.profile) action = { ...action, title: `${action.title} · ${values.profile}` };
+    if (action.fields) action = { ...action, fields: action.fields.filter(field => !((field.key === 'profile' || field.key === 'room') && values[field.key] !== undefined)) };
+    if (action.command && action.fields?.length === 0) { this.launch(action.command(values)); return; }
     if (nav.some(n => n.id === action.id)) { this.selectView(action.id as View); return; }
     const job = this.job();
     if (action.id === 'quit' || action.id === 'stop' || action.id === 'close') {
       if (action.id !== 'quit' && !job?.running) { this.notice = 'Select a running process first.'; this.changed(); return; }
       if (action.id === 'close' && (!job?.controls || job.model.session === 'none')) { this.notice = 'Select an online agent with an active conversation.'; this.changed(); return; }
-      this.form = { action: { ...action, fields: [{ key: 'confirm', label: action.id === 'quit' ? 'Stop active work and quit? Type yes' : `Confirm ${action.id} for ${job!.title}. Type yes`, required: true }] }, values: {}, field: 0, job: job?.id, session: job?.model.session };
+      this.form = { action: { ...action, fields: [{ key: 'confirm', label: action.id === 'quit' ? 'Stop active work and quit?' : `Confirm ${action.id} for ${job!.title}?`, required: true, choices: ['no', 'yes'] }] }, values: { confirm: 'no' }, field: 0, job: job?.id, session: job?.model.session };
     } else if (action.fields) {
-      this.form = { action, values: Object.fromEntries(action.fields.map(field => [field.key, values[field.key] ?? (field.key === 'agent' ? this.config.agent : undefined) ?? field.initial ?? ''])), field: 0, job: job?.id };
+      this.form = { action, values: { ...values, ...Object.fromEntries(action.fields.map(field => [field.key, values[field.key] ?? (field.key === 'agent' ? this.config.agent : undefined) ?? field.initial ?? ''])) }, field: 0, job: job?.id };
     } else if (action.command) this.launch(action.command({}));
     this.changed();
   }
@@ -146,7 +213,7 @@ export class RendezvousTui {
       const { action, values } = form;
       const job = this.jobs.find(j => j.id === form.job);
       if (['quit', 'stop', 'close'].includes(action.id)) {
-        if (values.confirm?.toLowerCase() !== 'yes') { this.notice = 'Type yes to confirm, or Esc to cancel.'; return; }
+        if (values.confirm !== 'yes') { this.form = undefined; this.notice = 'Cancelled.'; this.changed(); return; }
         if (action.id === 'quit') void this.quit();
         else if (!job?.running) throw new Error('That process is no longer running.');
         else if (action.id === 'stop') job.child.kill('SIGTERM');
@@ -163,9 +230,19 @@ export class RendezvousTui {
   private key = (text: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean }) => {
     if (this.closing) return;
     if (key.ctrl && key.name === 'c') { this.requestQuit(); return; }
-    if (key.ctrl && key.name === 'p') { this.paletteOpen = !this.paletteOpen; this.form = undefined; this.input = ''; this.selected = 0; this.changed(); return; }
-    if (key.name === 'escape') { this.form = undefined; this.paletteOpen = false; this.input = ''; this.notice = ''; this.changed(); return; }
-    if (this.form) {
+    if (key.ctrl && key.name === 'p') { this.paletteOpen = !this.paletteOpen; this.form = undefined; this.picker = undefined; this.input = ''; this.selected = 0; this.changed(); return; }
+    if (key.name === 'escape') { this.picker = undefined; this.form = undefined; this.paletteOpen = false; this.input = ''; this.notice = ''; this.changed(); return; }
+    if (this.picker) {
+      const rows = this.pickerRows();
+      if (key.name === 'down') this.selected = Math.min(Math.max(0, rows.length - 1), this.selected + 1);
+      else if (key.name === 'up') this.selected = Math.max(0, this.selected - 1);
+      else if (key.name === 'return' && rows[this.selected] && !this.picker.loading) {
+        const row = rows[this.selected];
+        if (row.disabled) this.notice = 'This friend is not available right now. Reopen Contact an agent to refresh.';
+        else this.picker.choose(row);
+      } else if (key.name === 'backspace') { this.input = [...this.input].slice(0, -1).join(''); this.selected = 0; }
+      else if (!key.ctrl && !key.meta && text && !/[\x00-\x1f\x7f]/.test(text)) { this.input += text; this.selected = 0; }
+    } else if (this.form) {
       const fields = this.form.action.fields!, field = fields[this.form.field];
       if (key.name === 'tab' || key.name === 'down' || key.name === 'up') this.form.field = (this.form.field + (key.name === 'up' || key.shift ? -1 : 1) + fields.length) % fields.length;
       else if (key.ctrl && key.name === 'u') this.form.values[field.key] = '';
@@ -209,15 +286,18 @@ export class RendezvousTui {
     else if (this.view === 'home') this.activate(tuiActions.find(a => a.id === ['start', 'setup', 'create', 'join'][this.selected % 4])!);
   }
   render(columns: number, rows: number, color = true) {
+    this.hits = [];
     const width = Math.max(1, Math.min(columns - 1, 240)), height = Math.max(1, rows);
     const s = new TuiScreen(width, height), sidebar = width >= 95 ? 25 : 0, x = sidebar + 3, mainWidth = width - x - 3;
     if (width < 45 || height < 20) { s.text(0, 0, 'rendezvous', p.primary, true); s.text(0, 2, 'Enlarge terminal to 46 × 20.', p.secondary); s.text(0, 4, 'Ctrl+C quits safely.', p.muted); return s.lines(color); }
     s.rect(0, 0, width, 3, p.panel); s.text(2, 1, '●', p.primary, true); s.text(4, 1, 'rendezvous', p.text, true);
     s.text(17, 1, `/ ${this.view === 'job' ? this.job()?.title ?? 'Execution' : nav.find(n => n.id === this.view)?.title}`, p.muted, false, width - 41);
+    this.hit(width - 23, 0, 23, 3, () => this.key(undefined, { name: 'p', ctrl: true }));
     if (width > 65) s.text(width - 22, 1, 'ctrl+p  commands', p.secondary);
     if (sidebar) {
       s.rect(0, 3, sidebar, height - 5, p.panel); s.text(3, 5, 'WORKSPACE', p.muted);
       nav.forEach((item, i) => {
+        this.hit(1, 7 + i * 2, sidebar - 2, 2, () => this.selectView(item.id));
         const active = item.id === this.view || item.id === 'jobs' && this.view === 'job';
         if (active) { s.rect(1, 7 + i * 2, sidebar - 2, 1, p.raised); s.text(1, 7 + i * 2, '▌', p.primary, true); }
         s.text(3, 7 + i * 2, `${i + 1}  ${item.title}`, active ? p.secondary : p.muted, active);
@@ -233,8 +313,9 @@ export class RendezvousTui {
       s.text(center, 8, 'Good work happens in good company.', p.text, true, mainWidth);
       s.text(center, 10, 'Connect your agents. Follow the conversation.', p.muted, false, mainWidth);
       s.rect(x, 13, mainWidth, 3, p.panel); s.text(x, 13, '▌', p.primary); s.text(x + 2, 14, 'What would you like to do?  / commands', p.secondary, false, mainWidth - 4);
+      this.hit(x, 13, mainWidth, 3, () => this.key(undefined, { name: 'p', ctrl: true }));
       const cards = [['Start an agent', 'Bring a saved identity online'], ['Set up an agent', 'Connect a new profile'], ['Create a room', 'Invite agents to collaborate'], ['Join a room', 'Continue a conversation']];
-      cards.forEach(([title, detail], i) => { const y = (height < 30 ? 16 : 18) + i * (height < 30 ? 1 : 2); if (this.selected % 4 === i) s.text(x, y, '›', p.primary, true); s.text(x + 2, y, title, p.secondary, true); if (mainWidth > 60) s.text(x + 24, y, detail, p.muted, false, mainWidth - 24); });
+      cards.forEach(([title, detail], i) => { const y = (height < 30 ? 16 : 18) + i * (height < 30 ? 1 : 2); this.hit(x, y, mainWidth, height < 30 ? 1 : 2, () => { this.selected = i; this.openSelected(); }); if (this.selected % 4 === i) s.text(x, y, '›', p.primary, true); s.text(x + 2, y, title, p.secondary, true); if (mainWidth > 60) s.text(x + 24, y, detail, p.muted, false, mainWidth - 24); });
     } else if (this.view === 'job') {
       const job = this.job();
       s.text(x, 5, job?.title ?? 'No process selected', p.text, true, mainWidth);
@@ -242,6 +323,9 @@ export class RendezvousTui {
       s.text(x, 7, job?.running ? job.model.state : job?.code === 0 ? 'Completed' : 'Stopped', job?.running ? p.secondary : p.muted, false, mainWidth);
       if (job && mainWidth > 55) s.text(x + 30, 7, `Session ${job.model.session.slice(0, 8)} · thread ${job.model.thread.slice(0, 12)}`, p.muted, false, mainWidth - 30);
       s.text(x, 9, ['conversation', 'execution', 'output'].map(tab => tab === this.pane ? `[ ${tab} ]` : `  ${tab}  `).join('  '), p.secondary, false, mainWidth);
+      let tabX = x;
+      for (const tab of ['conversation', 'execution', 'output'] as const) { this.hit(tabX, 9, tab.length + 6, 1, () => { this.pane = tab; this.scroll = 0; }); tabX += tab.length + 6; }
+      this.hit(x, height - 6, mainWidth, 3, () => { if (!job?.prompt) this.key(undefined, { name: 'p', ctrl: true }); });
       const entries = job ? this.pane === 'conversation' ? job.model.room : this.pane === 'execution' ? job.model.execution : job.output : [];
       const visible: string[] = [];
       for (const entry of entries) for (const line of entry.split('\n')) {
@@ -265,34 +349,51 @@ export class RendezvousTui {
       if (!entries.length) { s.text(x, 11, 'Nothing here yet.', p.secondary, true); s.text(x, 13, 'Press / to get started.', p.muted); }
       const selected = entries.length ? this.selected % entries.length : 0, page = Math.max(1, Math.floor((height - 14) / 4));
       const start = Math.floor(selected / page) * page;
-      entries.slice(start, start + page).forEach(([title, detail, meta], i) => { const y = 10 + i * 4, active = start + i === selected; s.rect(x, y, mainWidth, 3, active ? p.raised : p.panel); if (active) s.text(x, y, '▌', p.primary); s.text(x + 2, y, title, active ? p.secondary : p.text, true, mainWidth - 4); s.text(x + 2, y + 1, detail, p.muted, false, mainWidth - 4); s.text(x + 2, y + 2, meta, p.muted, false, mainWidth - 4); });
+      entries.slice(start, start + page).forEach(([title, detail, meta], i) => { const y = 10 + i * 4, active = start + i === selected; this.hit(x, y, mainWidth, 3, () => { this.selected = start + i; this.openSelected(); }); s.rect(x, y, mainWidth, 3, active ? p.raised : p.panel); if (active) s.text(x, y, '▌', p.primary); s.text(x + 2, y, title, active ? p.secondary : p.text, true, mainWidth - 4); s.text(x + 2, y + 1, detail, p.muted, false, mainWidth - 4); s.text(x + 2, y + 2, meta, p.muted, false, mainWidth - 4); });
     }
     s.rect(0, height - 2, width, 2, p.panel);
-    s.text(2, height - 2, this.notice || (sidebar ? '↑↓ select   enter open   n new   / commands   tab view' : '1 home  2 agents  3 rooms  4 work  5 settings  / commands'), this.notice ? p.secondary : p.muted, false, width - 4);
+    s.text(2, height - 2, this.notice || (sidebar ? 'click or ↑↓ select   enter open   wheel scroll   / commands' : '1 home  2 agents  3 rooms  4 work  5 settings  / commands'), this.notice ? p.secondary : p.muted, false, width - 4);
     s.text(2, height - 1, this.closing ? 'Disconnecting…' : 'ctrl+p command palette                              ctrl+c quit', p.muted, false, width - 4);
-    if (this.paletteOpen || this.form) this.modal(s, width, height);
+    if (this.paletteOpen || this.form || this.picker) this.modal(s, width, height);
     return s.lines(color);
   }
   private modal(s: TuiScreen, width: number, height: number) {
     const w = Math.min(76, width - 4), x = Math.floor((width - w) / 2), y = 3, h = height - 6;
+    this.hits = []; // A modal captures clicks; never activate the page behind it.
     s.rect(x, y, w, h, p.raised); s.text(x, y, '▌', p.primary, true);
-    if (this.form) {
+    if (this.picker) {
+      s.text(x + 2, y + 1, this.picker.title, p.secondary, true, w - 4);
+      s.text(x + 2, y + 3, `› ${this.input || 'Search by name…'}`, p.text, false, w - 4);
+      const rows = this.pickerRows(), count = Math.max(1, Math.floor((h - 7) / 2)), start = Math.floor(this.selected / count) * count;
+      if (this.picker.loading) s.text(x + 2, y + 5, 'Loading friends…', p.muted);
+      else if (!rows.length) s.text(x + 2, y + 5, 'No matching options.', p.muted);
+      else rows.slice(start, start + count).forEach((row, i) => {
+        const line = y + 5 + i * 2, active = start + i === this.selected;
+        this.hit(x + 1, line, w - 2, 2, () => { this.selected = start + i; this.key(undefined, { name: 'return' }); });
+        if (active) s.rect(x + 1, line, w - 2, 2, p.panel);
+        s.text(x + 2, line, `${active ? '› ' : '  '}${row.title}`, row.disabled ? p.muted : p.secondary, active, w - 4);
+        s.text(x + 4, line + 1, row.detail, p.muted, false, w - 6);
+      });
+      s.text(x + 2, y + h - 1, '↑↓ select · type to search · enter choose · esc cancel', p.muted, false, w - 4);
+    } else if (this.form) {
       const { action, values, field: focused } = this.form, fields = action.fields!;
       s.text(x + 2, y + 1, action.title, p.secondary, true, w - 4);
       s.text(x + 2, y + 2, action.description, p.muted, false, w - 4);
       const page = Math.max(1, Math.floor((h - 7) / 3)), first = Math.floor(focused / page) * page;
       fields.slice(first, first + page).forEach((field, i) => {
         const active = first + i === focused, row = y + 4 + i * 3;
+        this.hit(x + 2, row, w - 4, 2, () => { this.form!.field = first + i; if (field.choices) this.key(undefined, { name: 'right' }); });
         s.text(x + 2, row, `${field.label}${field.required ? ' *' : ''}`, active ? p.secondary : p.muted, active, w - 4);
         s.rect(x + 2, row + 1, w - 4, 1, active ? p.background : p.panel);
         s.text(x + 3, row + 1, `${active ? '› ' : ''}${[...(values[field.key] || '…')].slice(-Math.max(1, w - 14)).join('')}${active ? field.choices ? '   ‹  ›' : '▏' : ''}`, p.text, false, w - 6);
       });
-      s.text(x + 2, y + h - 2, 'tab next · ←→ choose · ctrl+u clear · enter continue / submit', p.secondary, false, w - 4);
+      s.text(x + 2, y + h - 2, '[ Submit ]   tab next · ←→ choose · ctrl+u clear', p.secondary, false, w - 4);
+      this.hit(x + 2, y + h - 2, 10, 1, () => this.submit());
       s.text(x + 2, y + h - 1, `${focused + 1}/${fields.length} fields                                      esc cancel`, p.muted, false, w - 4);
     } else {
       s.text(x + 2, y + 1, 'Command palette', p.secondary, true); s.text(x + 2, y + 3, `› ${this.input || 'Search actions…'}`, p.text, false, w - 4);
       const actions = this.actions(), count = Math.max(1, Math.floor((h - 7) / 2)), start = Math.floor(Math.max(0, this.selected) / count) * count;
-      actions.slice(start, start + count).forEach((action, i) => { const row = y + 5 + i * 2, active = start + i === this.selected; if (active) s.rect(x + 1, row, w - 2, 2, p.panel); s.text(x + 2, row, `${active ? '› ' : '  '}${action.title}`, active ? p.secondary : p.text, active, w - 4); s.text(x + 4, row + 1, action.description, p.muted, false, w - 6); });
+      actions.slice(start, start + count).forEach((action, i) => { const row = y + 5 + i * 2, active = start + i === this.selected; this.hit(x + 1, row, w - 2, 2, () => this.activate(action)); if (active) s.rect(x + 1, row, w - 2, 2, p.panel); s.text(x + 2, row, `${active ? '› ' : '  '}${action.title}`, active ? p.secondary : p.text, active, w - 4); s.text(x + 4, row + 1, action.description, p.muted, false, w - 6); });
       s.text(x + 2, y + h - 1, '↑↓ select · enter open · esc dismiss', p.muted, false, w - 4);
     }
   }

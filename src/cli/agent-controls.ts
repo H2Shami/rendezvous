@@ -2,6 +2,7 @@ import { AgentClientError, type AgentSession } from '../client/index.js';
 import { converse, type ConversationOptions } from './agent-conversations.js';
 
 export interface AgentControls {
+  peers?(after?: string): Promise<import('../agents/protocol.js').AgentPeersResponse>;
   open(peer: string, message: string): Promise<void>;
   close(sessionId: string): Promise<void>;
 }
@@ -28,6 +29,7 @@ export async function controlledConversations(options: ConversationOptions, regi
     finally { current = undefined; busy = false; }
   }
   register({
+    peers: after => client.peers({ after }),
     open(peer, message) {
       if (finished || client.signal.aborted) return Promise.reject(new Error('Listener disconnected.'));
       if (busy || queued) return Promise.reject(new Error('Finish or close the current conversation first.'));

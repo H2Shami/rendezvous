@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fixture } from './helpers.js';
 import { OwnerService } from '../src/owners/service.js';
+import { AgentClient } from '../src/client/index.js';
 import { AgentIdentityService } from '../src/agents/identity.js';
 
 function cli(args: string[], input?: string, env: NodeJS.ProcessEnv = {}) {
@@ -303,21 +304,42 @@ test('agent TUI and explicit plain mode both disconnect cleanly in a real termin
   const identity = new AgentIdentityService(f.db, f.auth, f.now);
   const agent = await identity.create(owner.id, { display_name: 'TUI test' });
   const key = await identity.issueKey(owner.id, agent.id);
+  const friend = await identity.create(owner.id, { display_name: 'Known Friend' });
+  const friendKey = await identity.issueKey(owner.id, friend.id);
+  for (const [left, right] of [[agent, friend], [friend, agent]]) await f.app.policies.put(owner.id, left.id, right.id, { allow_inbound: true, allow_outbound: true });
+  const peer = new AgentClient({ serverUrl: f.base, apiKey: friendKey.api_key });
   const env = { RENDEZVOUS_HOME: home, RENDEZVOUS_AGENT_API_KEY: key.api_key, PATH: `${home}:${process.env.PATH}`, TERM: 'xterm-256color' };
   try {
     await copyFile(new URL('./fixtures/agent-fake.mjs', import.meta.url), join(home, 'codex')); await chmod(join(home, 'codex'), 0o700);
     const setup = await cli(['agent', 'setup', 'tui', '--agent-id', agent.id, '--server', f.base, '--task', 'Test', '--no-input'], undefined, env);
     assert.equal(setup.code, 0, setup.stderr);
+    await peer.connect();
+    const offered = peer.offers();
+    const accepted = offered.next().then(async result => { await result.value!.accept(); return result.value!; });
     for (const plain of [false, true]) {
       const result = await terminal([process.execPath, 'dist/cli/main.js', 'agent', 'start', 'tui', ...(plain ? ['--no-tui'] : [])],
-        [{ wait: plain ? 'connected; accepting sessions' : 'Online', send: '\x03', screen: true, ...(plain ? { signal: 'SIGINT' as const } : {}) }], env);
+        plain ? [{ wait: 'connected; accepting sessions', send: '', screen: true, signal: 'SIGINT' }] : [
+          { wait: 'Online', send: '/contact an agent\r', screen: true },
+          { wait: 'Known Friend', send: '\r', screen: true },
+          { wait: 'Opening message', send: 'Hello from the friend picker\r', screen: true },
+          { wait: 'reply_sent', send: '\x03', screen: true },
+        ], env);
       assert.equal(result.code, 130, result.transcript);
       assert.equal(result.transcript.includes('\x1b[?1049h'), !plain);
       if (!plain) assert.ok(result.transcript.includes('\x1b[?1049l'));
       assert.ok(!result.transcript.includes(key.api_key));
       assert.equal(await f.app.receivers.presence(agent.id), 'offline');
+      if (!plain) {
+        const session = await accepted; await offered.return(undefined);
+        const page = await f.app.agentSessions.ownerMessages(owner.id, session.id, 0, 0);
+        assert.ok(page.messages.some(message => message.content === 'Hello from the friend picker'));
+      }
     }
   } finally {
+    await peer.disconnect();
+    await f.db.query('DELETE FROM sessions WHERE id IN (SELECT id FROM agent_sessions WHERE initiator_agent_id=$1)', [agent.id]);
+    for (const table of ['agent_receivers', 'agent_connections', 'agent_credentials']) await f.db.query(`DELETE FROM ${table} WHERE agent_id=$1`, [friend.id]);
+    await f.db.query('DELETE FROM agents WHERE id=$1', [friend.id]);
     for (const table of ['agent_receivers', 'agent_connections', 'agent_credentials']) await f.db.query(`DELETE FROM ${table} WHERE agent_id=$1`, [agent.id]);
     await f.db.query('DELETE FROM agents WHERE id=$1', [agent.id]); await f.db.query('DELETE FROM owners WHERE id=$1', [owner.id]);
     await f.stop(); await rm(home, { recursive: true, force: true });

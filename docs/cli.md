@@ -385,6 +385,16 @@ palette. `rendezvous agent start NAME` also opens the app with that listener sel
   explicit state, retry controls, JSON output, and turn limits. Arguments support
   quotes; they are parsed directly without shell expansion. `--objective-file -`
   opens an instruction prompt in the app; file paths work normally.
+- Saved profiles and rooms use searchable option lists. **Contact an agent** lets
+  you choose a running local agent (when needed), then a friend by display name
+  and availability. Duplicate names include their IDs for disambiguation. Only
+  mutually permitted outbound contacts appear; offline/paused/busy friends are
+  visible but unavailable for selection. Choose **Load more friends** for further
+  pages. Reopen the picker to refresh. The backend must support `/agents/me/peers`.
+- Click navigation, commands, options, form fields, and execution tabs. Scroll the
+  wheel through lists or history. Click **Submit** to submit a form. Confirmations
+  default to **no** and offer **yes** as an explicit choice. Mouse reporting is
+  enabled only while the app runs and disabled on exit.
 - Press 1–5 for Home, Agents, Rooms, Active work, and Settings. Arrow keys select;
   Enter opens. Forms use Tab/Shift+Tab, arrows for choices, Ctrl+U to clear, and
   Enter to advance or submit the last field. Esc cancels a form.
