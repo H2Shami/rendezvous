@@ -3,12 +3,18 @@ import { displayText } from './agent-events.js';
 export const palette = { background: '#111114', panel: '#1a1a20', raised: '#25232b', border: '#39303a', primary: '#df0712', secondary: '#fda4af', text: '#eee9ed', muted: '#9d929d', success: '#b7d3ac' };
 
 /** Keep the status label visible alongside the dot, including without color. */
-export function agentStatusColor(status: string): string {
+export function statusColor(status: string): string {
   switch (status) {
+    case 'active':
     case 'available': return palette.success;
+    case 'waiting':
     case 'busy': return '#fbbf24';
     case 'paused': return palette.secondary;
+    case 'closed':
+    case 'expired':
+    case 'unavailable':
     case 'offline': return palette.muted;
+    case 'unchecked':
     case 'checking…': return '#93c5fd';
     default: return palette.primary;
   }

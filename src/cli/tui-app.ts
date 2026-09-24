@@ -8,7 +8,7 @@ import { listProfiles, type AgentProfile } from './profiles.js';
 import { ownedRooms, readConfig, type Config, type LocalRoom } from './config.js';
 import { displayText, type ExecutionEvent } from './agent-events.js';
 import { AgentTuiModel } from './agent-tui.js';
-import { agentStatusColor, palette as p, TuiScreen } from './tui-screen.js';
+import { statusColor, palette as p, TuiScreen } from './tui-screen.js';
 import { tuiActions, type TuiAction } from './tui-actions.js';
 
 interface Choice { id: string; title: string; detail: string; status?: string; disabled?: boolean }
@@ -186,8 +186,9 @@ export class RendezvousTui {
     const pending = this.picker;
     await this.refreshRooms();
     if (this.picker !== pending) return;
-    const rows = this.rooms.map(room => ({ id: room.room_file, title: `Room ${room.session_id.slice(0, 8)}`,
+    const rows: Choice[] = this.rooms.map(room => ({ id: room.room_file, title: `Room ${room.session_id.slice(0, 8)}`,
       detail: this.roomStatuses.get(room.room_file)?.detail ?? 'unverified',
+      status: this.roomStatuses.get(room.room_file)?.state ?? 'unverified',
       disabled: action.id === 'join' && !this.roomStatuses.get(room.room_file)?.usable }));
     if (action.id === 'join') rows.unshift({ id: '', title: 'Use an invitation', detail: 'Enter a private invitation link', disabled: false });
     this.pick('Choose a room · refreshed', rows, row => {
@@ -446,8 +447,10 @@ export class RendezvousTui {
       const selected = entries.length ? this.selected % entries.length : 0, page = Math.max(1, Math.floor((height - 14) / 4));
       const start = Math.floor(selected / page) * page;
       entries.slice(start, start + page).forEach(([title, detail, meta], i) => { const y = 10 + i * 4, active = start + i === selected; this.hit(x, y, mainWidth, 3, () => { this.selected = start + i; this.openSelected(); }); s.rect(x, y, mainWidth, 3, active ? p.raised : p.panel); if (active) s.text(x, y, '▌', p.primary); s.text(x + 2, y, title, active ? p.secondary : p.text, true, mainWidth - 4); const hasStatus = this.view === 'agents';
-        if (hasStatus) s.text(x + 2, y + 1, '●', agentStatusColor(this.agentStatuses.get(this.profiles[start + i].name) ?? 'checking…'));
-        s.text(x + (hasStatus ? 4 : 2), y + 1, detail, p.muted, false, mainWidth - (hasStatus ? 6 : 4)); s.text(x + 2, y + 2, meta, p.muted, false, mainWidth - 4); });
+        if (hasStatus) s.text(x + 2, y + 1, '●', statusColor(this.agentStatuses.get(this.profiles[start + i].name) ?? 'checking…'));
+        s.text(x + (hasStatus ? 4 : 2), y + 1, detail, p.muted, false, mainWidth - (hasStatus ? 6 : 4)); const hasRoomStatus = this.view === 'rooms';
+        if (hasRoomStatus) s.text(x + 2, y + 2, '●', statusColor(this.roomStatuses.get(this.rooms[start + i].room_file)?.state ?? 'unchecked'));
+        s.text(x + (hasRoomStatus ? 4 : 2), y + 2, meta, p.muted, false, mainWidth - (hasRoomStatus ? 6 : 4)); });
     }
     s.rect(0, height - 2, width, 2, p.panel);
     s.text(2, height - 2, this.notice || (sidebar ? 'click or ↑↓ select   enter open   wheel scroll   / commands' : '1 home  2 agents  3 rooms  4 work  5 settings  / commands'), this.notice ? p.secondary : p.muted, false, width - 4);
@@ -471,7 +474,7 @@ export class RendezvousTui {
         this.hit(x + 1, line, w - 2, 2, () => { this.selected = start + i; this.key(undefined, { name: 'return' }); });
         if (active) s.rect(x + 1, line, w - 2, 2, p.panel);
         s.text(x + 2, line, `${active ? '› ' : '  '}${row.title}`, row.disabled ? p.muted : p.secondary, active, w - 4);
-        if (row.status) s.text(x + 4, line + 1, '●', agentStatusColor(row.status));
+        if (row.status) s.text(x + 4, line + 1, '●', statusColor(row.status));
         s.text(x + (row.status ? 6 : 4), line + 1, row.detail, p.muted, false, w - (row.status ? 8 : 6));
       });
       s.text(x + 2, y + h - 1, '↑↓ select · type to search · enter choose · esc cancel', p.muted, false, w - 4);
