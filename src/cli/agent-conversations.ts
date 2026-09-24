@@ -95,7 +95,8 @@ export async function converse(options: ConversationOptions, session: AgentSessi
   if (openingMessage !== undefined) {
     while (session.snapshot.state === 'pending') await session.status({ wait: 20 });
     if (terminal(session)) { await forget(options, session); return; }
-    await session.send(openingMessage);
+    const sent = await session.send(openingMessage);
+    options.events?.({ kind: 'reply_sent', sessionId: session.id, bindingId: session.bindingId, sequence: sent.sequence, text: openingMessage });
   }
   const emit: EventSink = event => options.events?.({ sessionId: session.id, bindingId: session.bindingId, ...event });
   emit({ kind: 'session', text: 'Connected' });

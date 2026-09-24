@@ -11,6 +11,7 @@ import { OwnerService } from '../src/owners/service.js';
 import { AgentJournal } from '../src/cli/agent-journal.js';
 import type { EventInput } from '../src/cli/agent-events.js';
 import { converse } from '../src/cli/agent-conversations.js';
+import { controlledConversations, type AgentControls } from '../src/cli/agent-controls.js';
 import { fixture, waitUntil } from './helpers.js';
 import { uuid, secret } from '../src/validation.js';
 
@@ -350,4 +351,41 @@ test(`remote closure racing acceptance (${timing}) cleans up without stopping th
     await outgoing.stopped();
     assert.equal(await f.app.receivers.presence(f.b.id), 'available');
   } finally { await receiver.disconnect(); await f.cleanup(); }
+});
+
+test('manual controls open and close sessions without replacing the listener or losing incoming offers', { timeout: 15000 }, async () => {
+  const f = await conversationFixture();
+  const receiver = new AgentClient({ serverUrl: f.base, apiKey: f.kb.api_key });
+  let task: Promise<void> | undefined, controls: AgentControls | undefined;
+  const events: EventInput[] = [];
+  try {
+    await receiver.connect(); await f.client.connect();
+    const lease = receiver.receiver;
+    task = controlledConversations({ client: receiver, directory: join(f.home, 'agents', 'receiver'),
+      profile: { version: 1, name: 'receiver', agentId: f.b.id, origin: f.base, agent: 'codex', workspace: f.home, instructions: 'Test', credentialFile: 'credential' },
+      log() {}, events: event => { events.push(event); },
+      runtime: { async run(_prompt, thread, _signal, onThread) {
+        if (!thread) await onThread('manual-thread'); return { message: null, status: 'ACTIVE' };
+      } },
+    }, value => { controls = value; });
+    await assert.rejects(controls!.open('not-a-uuid', 'hello'), /UUID/);
+    await controls!.open(f.a.id, 'Local opening message');
+    const offers = f.client.offers();
+    const outgoing = (await offers.next()).value!; await offers.return(undefined);
+    await outgoing.accept();
+    await eventually(async () => (await outgoing.read({ wait: 0 })).messages.some(m => m.content === 'Local opening message'));
+    await assert.rejects(controls!.open(f.a.id, 'another'), /current conversation/);
+    await assert.rejects(controls!.close(uuid()), /no longer current/);
+    await controls!.close(outgoing.id); await outgoing.status(); await outgoing.stopped();
+    await eventually(async () => receiver.sessions.length === 0);
+    assert.deepEqual(receiver.receiver, lease);
+    const incoming = await f.client.open(f.b.id);
+    await eventually(async () => (await incoming.status()).state === 'active');
+    await incoming.send('A message that deliberately gets no reply');
+    await eventually(async () => events.some(e => e.kind === 'silent' && e.sessionId === incoming.id));
+    await controls!.close(incoming.id); await incoming.status(); await incoming.stopped();
+    await eventually(async () => receiver.sessions.length === 0);
+    assert.deepEqual(receiver.receiver, lease);
+    assert.equal(await f.app.receivers.presence(f.b.id), 'available');
+  } finally { await receiver.disconnect(); await task?.catch(() => {}); await f.cleanup(); }
 });

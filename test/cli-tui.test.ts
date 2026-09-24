@@ -43,6 +43,15 @@ test('TUI input, cancellation, resize and shutdown restore terminal state', asyn
     const abort = new AbortController();
     const rejected = tui.ask('session', 'Next?', abort.signal);
     abort.abort(new Error('closed')); await assert.rejects(rejected, /closed/);
+    const opened: string[][] = [], closed: string[] = [];
+    tui.model.session = 'current-session';
+    tui.setControls({ async open(peer, message) { opened.push([peer, message]); }, async close(session) { closed.push(session); } });
+    input.emit('keypress', ':open peer hello', {}); input.emit('keypress', '\r', { name: 'return' });
+    await Promise.resolve(); assert.deepEqual(opened, [['peer', 'hello']]);
+    input.emit('keypress', ':close', {}); input.emit('keypress', '\r', { name: 'return' });
+    assert.deepEqual(closed, []);
+    input.emit('keypress', ':close yes', {}); input.emit('keypress', '\r', { name: 'return' });
+    await Promise.resolve(); assert.deepEqual(closed, ['current-session']);
     input.emit('keypress', '\t', { name: 'tab' }); assert.equal(tui.model.tab, 'execution');
     input.emit('keypress', undefined, { name: 'pageup' }); assert.equal(tui.model.scroll, 10);
     output.columns = 40; output.emit('resize');

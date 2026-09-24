@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fixture } from './helpers.js';
+import { OwnerService } from '../src/owners/service.js';
+import { AgentIdentityService } from '../src/agents/identity.js';
 
 function cli(args: string[], input?: string, env: NodeJS.ProcessEnv = {}) {
   return mkdtemp(join(tmpdir(), 'rendezvous-command-home-')).then(home => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveResult, reject) => {
@@ -203,7 +205,7 @@ test('join accepts URL or room/token and supports per-command agent selection', 
   } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
 });
 
-function terminal(command: string[], steps: { wait: string; send: string }[], env: NodeJS.ProcessEnv) {
+function terminal(command: string[], steps: { wait: string; send: string; screen?: boolean; signal?: 'SIGINT' }[], env: NodeJS.ProcessEnv) {
   return new Promise<{ code: number; stdout: string; transcript: string }>((resolveResult, reject) => {
     const child = spawn('python3', ['test/fixtures/cli-prompt.py'], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
@@ -273,4 +275,32 @@ test('owner command recovers the printed creation link without revealing it in r
     const rows = await cli(['rooms', '--json'], undefined, env);
     assert.ok(!rows.stdout.includes(room.owner_url));
   } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('agent TUI and explicit plain mode both disconnect cleanly in a real terminal', { skip: process.platform === 'win32', timeout: 20000 }, async () => {
+  const f = await fixture(), home = await mkdtemp(join(tmpdir(), 'rendezvous-tui-cli-'));
+  const issuer = `https://${randomUUID()}.example`;
+  const owner = await new OwnerService(f.db, f.auth, f.now).establish(issuer, 'tui');
+  const identity = new AgentIdentityService(f.db, f.auth, f.now);
+  const agent = await identity.create(owner.id, { display_name: 'TUI test' });
+  const key = await identity.issueKey(owner.id, agent.id);
+  const env = { RENDEZVOUS_HOME: home, RENDEZVOUS_AGENT_API_KEY: key.api_key, PATH: `${home}:${process.env.PATH}`, TERM: 'xterm-256color' };
+  try {
+    await copyFile(new URL('./fixtures/agent-fake.mjs', import.meta.url), join(home, 'codex')); await chmod(join(home, 'codex'), 0o700);
+    const setup = await cli(['agent', 'setup', 'tui', '--agent-id', agent.id, '--server', f.base, '--task', 'Test', '--no-input'], undefined, env);
+    assert.equal(setup.code, 0, setup.stderr);
+    for (const plain of [false, true]) {
+      const result = await terminal([process.execPath, 'dist/cli/main.js', 'agent', 'start', 'tui', ...(plain ? ['--no-tui'] : [])],
+        [{ wait: plain ? 'connected; accepting sessions' : 'Online', send: '\x03', screen: true, ...(plain ? { signal: 'SIGINT' as const } : {}) }], env);
+      assert.equal(result.code, 130, result.transcript);
+      assert.equal(result.transcript.includes('\x1b[?1049h'), !plain);
+      if (!plain) assert.ok(result.transcript.includes('\x1b[?1049l'));
+      assert.ok(!result.transcript.includes(key.api_key));
+      assert.equal(await f.app.receivers.presence(agent.id), 'offline');
+    }
+  } finally {
+    for (const table of ['agent_receivers', 'agent_connections', 'agent_credentials']) await f.db.query(`DELETE FROM ${table} WHERE agent_id=$1`, [agent.id]);
+    await f.db.query('DELETE FROM agents WHERE id=$1', [agent.id]); await f.db.query('DELETE FROM owners WHERE id=$1', [owner.id]);
+    await f.stop(); await rm(home, { recursive: true, force: true });
+  }
 });

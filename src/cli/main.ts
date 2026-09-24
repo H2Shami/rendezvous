@@ -258,6 +258,7 @@ async function main() {
         if (v.message !== undefined && (!v.message.trim() || Buffer.byteLength(v.message) > 32768)) throw new UsageError('--message must contain 1–32768 bytes.');
         const tui = useTui({ noTui: v['no-tui'], events: v.events }) ? new AgentTui(name, stop) : undefined;
         try { await startAgent(name, { takeover: v.takeover, signal: controller.signal, log: tui?.log ?? log,
+          controls: tui && !v['no-input'] ? tui.setControls : undefined,
           events: v.events ? event => new Promise<void>(resolve => { process.stdout.write(JSON.stringify(event) + '\n', () => resolve()); }) : tui?.events,
           closeSessions: v['close-sessions'], peer: v.peer, message: v.message,
           turnTimeout: integer(v['turn-timeout'], 300, '--turn-timeout'),

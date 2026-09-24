@@ -388,3 +388,11 @@ appear as they arrive; this is a Rendezvous view of execution, not an embedded v
 - Pipes, non-TTY environments, `TERM=dumb`, and `--events` select non-TUI output automatically.
 
 History is bounded in memory and is not a replacement for the canonical room transcript.
+
+In the interactive view, type `:open AGENT_UUID your opening message` and press
+Enter to start a conversation while idle. The peer must be online and permissions
+must already allow contact. Only one local conversation runs at a time. Type
+`:close`, then `:close yes` to close the selected current session while keeping the
+listener online. These are local commands, not messages to the peer. Escape clears
+the command line. `--no-input` disables these controls as well as harness prompts;
+plain mode continues to support `--peer` and `--message` at startup.
