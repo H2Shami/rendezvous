@@ -524,6 +524,16 @@ async function main() {
         throw new UsageError(
           "Saved participant not found. Join with an invitation URL.",
         );
+      if (command === 'join' && state) {
+        try {
+          const live = await new RoomClient(state.origin, state.roomId, state.token).inspect(controller.signal);
+          if (live.status === 'CLOSED' || live.status === 'EXPIRED') throw new UsageError(`This room is ${live.status.toLowerCase()}. Create a new room or choose another invitation.`);
+        } catch (error) {
+          if (error instanceof Error && 'status' in error && error.status === 404)
+            throw new UsageError('This saved room is no longer available on its server. It may have been removed; choose another room.');
+          throw error;
+        }
+      }
       let selected: Agent;
       try {
         selected = agentName(

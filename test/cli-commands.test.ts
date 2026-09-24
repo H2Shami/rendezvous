@@ -124,6 +124,15 @@ test('created room file feeds a listener and resumes the saved conversation', {
     const resumed = JSON.parse(await readFile(stateFile, 'utf8'));
     assert.equal(resumed.participantId, saved.participantId);
     assert.equal(resumed.objective, 'Updated local instructions.');
+    const room = JSON.parse(created.stdout);
+    await f.service.close(room.session_id, new URL(room.owner_url).hash.slice(room.session_id.length + 2));
+    const closed = await cli(args, 'Do not run this.', env);
+    assert.equal(closed.code, 2); assert.match(closed.stderr, /room is closed/);
+    assert.doesNotMatch(closed.stderr, /Joined room|Starting .*turn/);
+    await f.db.query('DELETE FROM sessions WHERE id=$1', [room.session_id]);
+    const missing = await cli(args, 'Do not run this.', env);
+    assert.equal(missing.code, 2); assert.match(missing.stderr, /no longer available/);
+    assert.deepEqual(JSON.parse(await readFile(stateFile, 'utf8')), resumed);
   } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
 });
 

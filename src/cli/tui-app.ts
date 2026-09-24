@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from 'node:child_process';
+import { roomStatus, type RoomStatus } from './room-status.js';
 import { TerminalInput } from './tui-input.js';
 import { randomUUID } from 'node:crypto';
 import { colorEnabled } from './ui.js';
@@ -25,6 +26,8 @@ export class RendezvousTui {
   view: View = 'home';
   profiles: AgentProfile[] = [];
   rooms: LocalRoom[] = [];
+  roomStatuses = new Map<string, RoomStatus>();
+  private roomRefresh = 0;
   config: Config = {};
   jobs: Job[] = [];
   selectedJob?: string;
@@ -140,6 +143,42 @@ export class RendezvousTui {
     });
     this.changed();
   }
+  private async refreshRooms() {
+    const version = ++this.roomRefresh;
+    let rooms: LocalRoom[];
+    try { rooms = await ownedRooms(); } catch { this.notice = 'Could not reload saved rooms.'; this.changed(); return; }
+    const pending = [...rooms], statuses = new Map<string, RoomStatus>();
+    await Promise.all(Array.from({ length: Math.min(4, rooms.length) }, async () => {
+      while (pending.length) { const room = pending.shift()!; statuses.set(room.room_file, await roomStatus(room)); }
+    }));
+    if (version !== this.roomRefresh) return;
+    this.rooms = rooms; this.roomStatuses = statuses; this.changed();
+  }
+  private async roomPicker(action: TuiAction) {
+    this.pick('Refreshing rooms from their servers…', [], () => {});
+    const pending = this.picker;
+    await this.refreshRooms();
+    if (this.picker !== pending) return;
+    const rows = this.rooms.map(room => ({ id: room.room_file, title: `Room ${room.session_id.slice(0, 8)}`,
+      detail: this.roomStatuses.get(room.room_file)?.detail ?? 'unverified',
+      disabled: action.id === 'join' && !this.roomStatuses.get(room.room_file)?.usable }));
+    if (action.id === 'join') rows.unshift({ id: '', title: 'Use an invitation', detail: 'Enter a private invitation link', disabled: false });
+    this.pick('Choose a room · refreshed', rows, row => {
+      const room = this.rooms.find(r => r.room_file === row.id);
+      if (room && action.id === 'join') void this.chooseRoom(room);
+      else this.activate(action, { room: room?.session_id ?? '' });
+    });
+  }
+  private async chooseRoom(room: LocalRoom) {
+    this.pick('Checking selected room…', [], () => {});
+    const pending = this.picker;
+    const current = (await ownedRooms().catch(() => [])).find(r => r.room_file === room.room_file);
+    const status = current ? await roomStatus(current) : { state: 'unavailable', usable: false, detail: 'Saved room no longer exists locally' };
+    if (this.picker !== pending) return;
+    this.roomStatuses.set(room.room_file, status); this.picker = undefined;
+    if (!status.usable) { this.notice = `${status.detail}. Choose another room, or reopen Rooms to retry.`; this.changed(); return; }
+    this.activate(tuiActions.find(a => a.id === 'join')!, { room: current!.session_id, server: new URL(current!.invite_url).origin });
+  }
   private pick(title: string, rows: Choice[], choose: (row: Choice) => void) {
     this.form = undefined; this.paletteOpen = false; this.input = ''; this.selected = 0;
     this.picker = { title, rows, choose }; this.changed();
@@ -168,7 +207,7 @@ export class RendezvousTui {
     if (!rows.length) this.notice = 'No permitted friends yet. Add a friend and enable outbound/inbound access in the dashboard.';
   }
   private pickerRows() { const query = this.input.toLowerCase(); return this.picker!.rows.filter(row => row.id === 'more' || `${row.title} ${row.detail}`.toLowerCase().includes(query)); }
-  private selectView(view: View) { this.view = view; this.selected = 0; this.input = ''; this.form = undefined; this.picker = undefined; this.paletteOpen = false; this.scroll = 0; this.changed(); }
+  private selectView(view: View) { this.view = view; this.selected = 0; this.input = ''; this.form = undefined; this.picker = undefined; this.paletteOpen = false; this.scroll = 0; this.changed(); if (view === 'rooms') { this.notice = 'Refreshing rooms from their servers…'; void this.refreshRooms().then(() => { if (this.notice === 'Refreshing rooms from their servers…') this.notice = ''; this.changed(); }); } }
   private actions() { const query = this.input.replace(/^\//, '').toLowerCase(); return tuiActions.filter(a => `${a.id} ${a.title} ${a.description}`.toLowerCase().includes(query)); }
   activate(action: TuiAction, values: Record<string, string> = {}) {
     this.paletteOpen = false; this.picker = undefined; this.input = ''; this.selected = 0; this.notice = '';
@@ -182,14 +221,18 @@ export class RendezvousTui {
       return;
     }
     if (['start', 'inspect', 'status'].includes(action.id) && !values.profile) {
-      this.pick('Choose a saved agent', this.profiles.map(profile => ({ id: profile.name, title: profile.name, detail: `${profile.agent} · ${profile.origin}` })), row => this.activate(action, { profile: row.id }));
-      if (!this.profiles.length) this.notice = 'No saved agents. Choose Set up an agent first.';
+      this.pick('Refreshing saved agents…', [], () => {});
+      const pending = this.picker;
+      void listProfiles().then(profiles => {
+        if (this.picker !== pending) return;
+        this.profiles = profiles;
+        this.pick('Choose a saved agent', profiles.map(profile => ({ id: profile.name, title: profile.name, detail: `${profile.agent} · ${profile.origin}` })), row => this.activate(action, { profile: row.id }));
+        if (!profiles.length) this.notice = 'No saved agents. Choose Set up an agent first.';
+      }).catch(() => { if (this.picker === pending) { this.notice = 'Could not refresh saved agents. Reopen to retry.'; this.changed(); } });
       return;
     }
     if (['join', 'owner'].includes(action.id) && values.room === undefined) {
-      const rooms = this.rooms.map(room => ({ id: room.session_id, title: `Room ${room.session_id.slice(0, 8)}`, detail: `Expires ${room.expires_at}` }));
-      if (action.id === 'join') rooms.unshift({ id: '', title: 'Use an invitation', detail: 'Enter a private invitation link' });
-      this.pick('Choose a room', rooms, row => this.activate(action, { room: row.id })); return;
+      void this.roomPicker(action); return;
     }
     if (values.profile) action = { ...action, title: `${action.title} · ${values.profile}` };
     if (action.fields) action = { ...action, fields: action.fields.filter(field => !((field.key === 'profile' || field.key === 'room') && values[field.key] !== undefined)) };
@@ -238,7 +281,7 @@ export class RendezvousTui {
       else if (key.name === 'up') this.selected = Math.max(0, this.selected - 1);
       else if (key.name === 'return' && rows[this.selected] && !this.picker.loading) {
         const row = rows[this.selected];
-        if (row.disabled) this.notice = 'This friend is not available right now. Reopen Contact an agent to refresh.';
+        if (row.disabled) this.notice = `Unavailable: ${row.detail}. Reopen this list to refresh.`;
         else this.picker.choose(row);
       } else if (key.name === 'backspace') { this.input = [...this.input].slice(0, -1).join(''); this.selected = 0; }
       else if (!key.ctrl && !key.meta && text && !/[\x00-\x1f\x7f]/.test(text)) { this.input += text; this.selected = 0; }
@@ -280,7 +323,7 @@ export class RendezvousTui {
   };
   private openSelected() {
     if (this.view === 'agents' && this.profiles.length) this.activate(tuiActions.find(a => a.id === 'start')!, { profile: this.profiles[this.selected % this.profiles.length].name });
-    else if (this.view === 'rooms' && this.rooms.length) this.activate(tuiActions.find(a => a.id === 'join')!, { room: this.rooms[this.selected % this.rooms.length].session_id });
+    else if (this.view === 'rooms' && this.rooms.length) void this.chooseRoom(this.rooms[this.selected % this.rooms.length]);
     else if (this.view === 'jobs' && this.jobs.length) { this.selectedJob = this.jobs[this.selected % this.jobs.length].id; this.view = 'job'; this.pane = 'execution'; this.input = ''; this.scroll = 0; }
     else if (this.view === 'settings') this.activate(tuiActions.find(a => a.id === (this.selected % 2 ? 'config-server' : 'config-agent'))!);
     else if (this.view === 'home') this.activate(tuiActions.find(a => a.id === ['start', 'setup', 'create', 'join'][this.selected % 4])!);
@@ -343,7 +386,7 @@ export class RendezvousTui {
     } else {
       const heading = nav.find(n => n.id === this.view)!; s.text(x, 5, heading.title, p.text, true); s.text(x, 7, heading.hint, p.muted);
       const entries = this.view === 'agents' ? this.profiles.map(a => [a.name, `${a.agent} · ${a.origin}`, a.agentId])
-        : this.view === 'rooms' ? this.rooms.map(r => [r.session_id, r.invite_url.split('/').slice(0, 3).join('/'), `Expires ${r.expires_at}`])
+        : this.view === 'rooms' ? this.rooms.map(r => [r.session_id, r.invite_url.split('/').slice(0, 3).join('/'), this.roomStatuses.get(r.room_file)?.detail ?? 'Not yet checked on server'])
         : this.view === 'jobs' ? this.jobs.map(j => [j.title, j.running ? j.model.state : `Finished · ${j.code ?? 'signal'}`, j.prompt ? 'Needs local input' : j.model.session])
         : [['Default harness', this.config.agent ?? 'codex', 'Used when a command does not choose a harness'], ['Default server', this.config.server ?? 'https://dev.userendezvous.com', 'Command overrides remain available']];
       if (!entries.length) { s.text(x, 11, 'Nothing here yet.', p.secondary, true); s.text(x, 13, 'Press / to get started.', p.muted); }

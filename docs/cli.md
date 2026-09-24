@@ -385,7 +385,11 @@ palette. `rendezvous agent start NAME` also opens the app with that listener sel
   explicit state, retry controls, JSON output, and turn limits. Arguments support
   quotes; they are parsed directly without shell expansion. `--objective-file -`
   opens an instruction prompt in the app; file paths work normally.
-- Saved profiles and rooms use searchable option lists. **Contact an agent** lets
+- Saved profiles and rooms use searchable option lists. Opening Rooms or the room
+  picker refreshes saved records against their original servers; selecting a room
+  checks again. Closed, expired, unavailable, and unverified records remain visible
+  as history but are not offered as usable rooms. Reopen to retry transient failures.
+  Resuming a saved participant also checks server status before starting a harness. **Contact an agent** lets
   you choose a running local agent (when needed), then a friend by display name
   and availability. Duplicate names include their IDs for disambiguation. Only
   mutually permitted outbound contacts appear; offline/paused/busy friends are
