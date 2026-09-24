@@ -190,3 +190,11 @@ returns only enabled peers with mutually compatible outbound/inbound permissions
 it does not create a session. Use the selected peer's ID with `client.open(id)`.
 Availability may change before admission, so handle the usual open errors. Servers
 must provide the additive `/api/v1/agents/me/peers` endpoint to support discovery.
+
+
+Harnesses may supply `SessionHandler.localInput` with `next(signal)` and
+`handle(message, session, signal)`. The SDK serializes these local turns with
+`onMessages`, cancels the current read without advancing its cursor when local input
+wins, and writes a turn marker before calling the local handler. Failure preserves
+that marker for explicit recovery. `next` must honor cancellation. Remote room
+messages must never fulfill the local input source or supply approval.

@@ -249,3 +249,32 @@ test('SDK discovers friend names and availability without creating a conversatio
     assert.deepEqual((await client.peers()).peers, []);
   } finally { await f.stop(); }
 });
+
+test('failed local steering remains journaled and cannot advance unseen peer messages', async () => {
+  const f = await setup();
+  try {
+    const journal = new MemoryJournal();
+    const a = f.make(), b = f.make(f.kb.api_key, { journal });
+    await a.connect(); await b.connect();
+    const offers = b.offers(), pending = offers.next();
+    const outgoing = await a.open(f.b.id), incoming = (await pending).value!;
+    await offers.return(undefined); await incoming.accept();
+    let delivered = false;
+    await assert.rejects(incoming.run({
+      localInput: {
+        next: async signal => {
+          if (!delivered) { delivered = true; return 'local instruction'; }
+          return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+        },
+        async handle() {
+          assert.deepEqual((await journal.load())!.sessions[incoming.id].turn, { through: 0 });
+          await outgoing.send('A peer message racing the local turn');
+          throw new Error('Local harness failed');
+        },
+      },
+      async onMessages() { throw new Error('Must not process peer messages after a failed turn'); }, async stop() {},
+    }), /Local harness failed/);
+    assert.equal((await journal.load())!.sessions[incoming.id].cursor, 0);
+    assert.deepEqual((await journal.load())!.sessions[incoming.id].turn, { through: 0 });
+  } finally { await f.stop(); }
+});
