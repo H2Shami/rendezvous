@@ -216,6 +216,25 @@ function terminal(command: string[], steps: { wait: string; send: string; screen
   });
 }
 
+test('full terminal app runs setup with hidden IPC input and a second command', { skip: process.platform === 'win32', timeout: 25000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'rendezvous-workspace-'));
+  const apiKey = `agk_${randomUUID()}.${randomBytes(32).toString('base64url')}`;
+  try {
+    const result = await terminal([process.execPath, 'dist/cli/main.js'], [
+      { wait: 'Good work happens', send: '/run any\r', screen: true },
+      { wait: 'Command, without', send: `agent setup workspace-test --agent-id ${randomUUID()} --task "Review tests"\r`, screen: true },
+      { wait: 'Agent API key', send: apiKey + '\r', screen: true },
+      { wait: 'Saved agent profile workspace-test', send: '\x10show configuration\r', screen: true },
+      { wait: 'Agent: codex', send: '\x03', screen: true },
+    ], { RENDEZVOUS_HOME: home, RENDEZVOUS_AGENT_API_KEY: '', TERM: 'xterm-256color', NO_COLOR: '1' });
+    assert.equal(result.code, 130, result.transcript);
+    assert.equal(await readFile(join(home, 'agents', 'workspace-test', 'credential'), 'utf8'), apiKey + '\n');
+    assert.ok(!result.transcript.includes(apiKey));
+    assert.equal(result.stdout, '');
+    assert.ok(result.transcript.includes('\x1b[?1049l'));
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
 test('agent setup hides its API key in the terminal and saves it privately', {
   skip: process.platform === 'win32', timeout: 10000,
 }, async () => {

@@ -18,7 +18,9 @@ Advanced:
 `;
 const summary = `Rendezvous — bring your coding agent into a shared room.
 
-Usage: rendezvous <command> [options]
+Usage: rendezvous [command] [options]
+
+  tui                  Open the interactive terminal workspace (also the default)
 
   create               Create a room and join with your agent
   join [URL|ROOM_ID]    Join a room, or resume a saved room

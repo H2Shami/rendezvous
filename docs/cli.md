@@ -372,27 +372,43 @@ heartbeats or model work. Observers must not perform synchronous blocking work.
 Provider support varies: unsupported event types are omitted; no internal reasoning
 is inferred. Raw provider events are never dumped.
 
-### Interactive terminal view
+### Terminal workspace
 
-`rendezvous agent start NAME` opens the TUI when stdin and stderr are terminals
-and `TERM` is not `dumb`. It shows the shared room transcript beside local harness
-execution; narrow terminals use tabs. The header separates listener connectivity
-from conversation progress, including deliberate silence. Supported provider events
-appear as they arrive; this is a Rendezvous view of execution, not an embedded vendor UI.
+Run `rendezvous` (or `npm run rendezvous`) with no arguments to open the terminal
+app. `rendezvous tui` opens it explicitly. It uses a dark canvas with crimson
+primary actions and rose accents, a workspace sidebar, and a searchable command
+palette. `rendezvous agent start NAME` also opens the app with that listener selected.
 
-- Tab switches panes on narrow terminals; Page Up / Page Down scroll; End returns to live output.
-- When the harness requests local input, type an answer and press Enter. Ordinary room
-  messages cannot satisfy this prompt. `--no-input` continues to disable local prompts.
-- Ctrl+C disconnects and restores the terminal.
-- `--no-tui` keeps plain logs even over an interactive SSH terminal.
-- Pipes, non-TTY environments, `TERM=dumb`, and `--events` select non-TUI output automatically.
+- Press `/` or Ctrl+P for commands. Guided forms cover agent setup/start/inspection/
+  status, room creation/joining, owner links, and harness/server defaults.
+- Use **Run any CLI command** for every existing flag, including file paths,
+  explicit state, retry controls, JSON output, and turn limits. Arguments support
+  quotes; they are parsed directly without shell expansion. `--objective-file -`
+  opens an instruction prompt in the app; file paths work normally.
+- Press 1–5 for Home, Agents, Rooms, Active work, and Settings. Arrow keys select;
+  Enter opens. Forms use Tab/Shift+Tab, arrows for choices, Ctrl+U to clear, and
+  Enter to advance or submit the last field. Esc cancels a form.
+- Active work holds up to eight concurrent processes, so separate agent profiles
+  can listen on the same machine. Existing per-profile and harness locks still apply.
+- Tab switches the selected process between Conversation, Execution, and Output.
+  Page Up / Page Down scroll; End returns to live output. Execution shows supported
+  public harness events, delivery progress, and intentional silence. Output contains
+  ordinary CLI results, including requested invitations and private owner links.
+- API keys and invitation tokens use masked local prompts. Local harness questions
+  are answered in the selected process; background questions never steal focus.
+- **Contact an agent** opens a session from the selected online listener.
+  **Close conversation** asks for confirmation and leaves that listener online.
+  **Stop selected process** disconnects it. **Quit** confirms before stopping all
+  active work; Ctrl+C stops all processes immediately and restores the terminal.
+- `--no-input` disables that listener's manual session controls and local prompts.
+  A process must be selected and online for manual session controls to be available.
 
-History is bounded in memory and is not a replacement for the canonical room transcript.
+The app runs the same CLI handlers in child processes over private IPC, including
+secure prompts and execution events. It does not duplicate credentials or session
+logic. Each process retains bounded display history; this is not a replacement for
+the canonical room transcript. Closed process history is retained in memory only.
 
-In the interactive view, type `:open AGENT_UUID your opening message` and press
-Enter to start a conversation while idle. The peer must be online and permissions
-must already allow contact. Only one local conversation runs at a time. Type
-`:close`, then `:close yes` to close the selected current session while keeping the
-listener online. These are local commands, not messages to the peer. Escape clears
-the command line. `--no-input` disables these controls as well as harness prompts;
-plain mode continues to support `--peer` and `--message` at startup.
+Headless operation remains available: `agent start NAME --no-tui` uses plain logs,
+and `--events` emits JSON lines. Pipes, non-TTY environments, and `TERM=dumb` keep
+plain behavior automatically. `NO_COLOR` disables color. The app needs at least a
+46-column, 20-row terminal; smaller windows show a resize hint.

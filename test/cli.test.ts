@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixture } from './helpers.js';
 import { HttpError, parseInvitation, RoomClient } from '../src/cli/client.js';
+import type { EventInput } from '../src/cli/agent-events.js';
 import { listen } from '../src/cli/bridge.js';
 import { codexArguments, parseTurnResult } from '../src/cli/runtime.js';
 import { loadState, lockState, saveState, type BridgeState } from '../src/cli/state.js';
@@ -59,7 +60,8 @@ test('HTTP room -> runtime -> reply -> idle -> resumed turn, without self-trigge
     const signal = AbortSignal.timeout(5000);
     const calls: (string | undefined)[] = [];
     let writes = 0;
-    await listen({ state, client, signal, save: async () => { writes++; }, log: () => {}, maxTurns: 2,
+    const events: EventInput[] = [];
+    await listen({ state, client, signal, events: event => events.push(event), save: async () => { writes++; }, log: () => {}, maxTurns: 2,
       runtime: { run: async (prompt, thread, _signal, onThread) => {
         calls.push(thread); assert.ok(!prompt.includes(membership.participant_token));
         await onThread('dedicated-thread');
@@ -73,6 +75,10 @@ test('HTTP room -> runtime -> reply -> idle -> resumed turn, without self-trigge
       } },
     });
     assert.deepEqual(calls, [undefined, 'dedicated-thread']);
+    assert.ok(events.some(e => e.kind === 'received' && e.text?.includes('What about Thursday?')));
+    assert.deepEqual(events.filter(e => e.kind === 'reply_sent').map(e => e.text), ['Hello from the bridge', 'Need my user to approve Thursday.']);
+    assert.ok(events.some(e => e.kind === 'waiting_user'));
+    assert.ok(events.every(e => e.sessionId === room.session_id));
     assert.equal(state.inFlight, false); assert.equal(state.cursor, 2); assert.ok(writes >= 6);
     const page = await client.read(0, 0, signal);
     assert.deepEqual(page.messages.map(m => m.content), ['What about Thursday?', 'Hello from the bridge', 'Need my user to approve Thursday.']);

@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { crimson } from './ui.js';
 import { Writable } from "node:stream";
+import { askTui, tuiChild } from './tui-channel.js';
 
 export class UsageError extends Error {}
 export class Prompts {
@@ -9,7 +10,7 @@ export class Prompts {
     private enabled = true,
   ) {}
   get interactive() {
-    return this.enabled && !!process.stdin.isTTY && !!process.stderr.isTTY;
+    return this.enabled && (tuiChild || (!!process.stdin.isTTY && !!process.stderr.isTTY));
   }
   async ask(
     label: string,
@@ -18,6 +19,7 @@ export class Prompts {
   ) {
     if (!this.interactive)
       throw new UsageError(`${label} is required. ${hint}`);
+    if (tuiChild) return askTui(label, hint, this.signal, options);
     // Suppress readline's echo for invitation URLs and tokens; prompts still go to stderr.
     let muted = false;
     const output = new Writable({

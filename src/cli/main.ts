@@ -36,7 +36,10 @@ import { Prompts, UsageError } from "./prompts.js";
 import { help } from "./help.js";
 import { createProfile, listProfiles, profileName, readProfile } from './profiles.js';
 import { agentErrorMessage, agentStatus, startAgent } from './agent-listener.js';
-import { AgentTui, useTui } from './agent-tui.js';
+import { useTui } from './agent-tui.js';
+import { fileURLToPath } from 'node:url';
+import { tuiChild, tuiEvent, attachTuiControls } from './tui-channel.js';
+import { executionEvents } from './agent-events.js';
 import { AgentClientError } from '../client/index.js';
 
 export const DEFAULT_SERVER = "https://dev.userendezvous.com";
@@ -59,8 +62,9 @@ function integer(
     throw new UsageError(`${flag} must be an integer from 1 to ${max}.`);
   return n;
 }
-async function objectiveFile(path: string, signal: AbortSignal) {
+async function objectiveFile(path: string, signal: AbortSignal, interactive: boolean) {
   if (path !== "-") return readFile(resolve(path), "utf8");
+  if (tuiChild) return new Prompts(signal, interactive).ask('Task instructions', 'Paste the instructions here, or use a file path with --objective-file.');
   if (process.stdin.isTTY)
     throw new UsageError("--objective-file - requires piped input.");
   const chunks: Buffer[] = [];
@@ -98,6 +102,15 @@ async function findSavedState(roomId: string, origin?: string) {
 
 async function main() {
   const args = process.argv.slice(2);
+  if (tuiChild) process.channel?.unref();
+  const graphical = !tuiChild && useTui({ noTui: args.includes('--no-tui'), events: args.includes('--events') });
+  if (graphical && (!args.length || args[0] === 'tui' || args[0] === 'agent' && args[1] === 'start') && !args.some(a => ['--help', '-h'].includes(a))) {
+    if (args[0] === 'tui' && args.length > 1) throw new UsageError('Use tui without arguments; choose commands inside the app.');
+    const { RendezvousTui } = await import('./tui-app.js');
+    await new RendezvousTui(fileURLToPath(import.meta.url)).run(args[0] === 'agent' ? args : undefined);
+    return;
+  }
+  if (args[0] === 'tui' && !args.some(a => ['--help', '-h'].includes(a))) throw new UsageError('The terminal app requires an interactive terminal. Use CLI commands for headless execution.');
   const topic = args[0] === "help" ? args[1] : args[0];
   if (
     !args.length ||
@@ -230,6 +243,7 @@ async function main() {
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
+  if (tuiChild) process.once("disconnect", stop);
   const prompts = new Prompts(controller.signal, !v["no-input"] && !v.json);
   const log = (message: string) => {
     if (!v.quiet) console.error(statusLine(message));
@@ -256,17 +270,19 @@ async function main() {
         if ((v.peer === undefined) !== (v.message === undefined)) throw new UsageError('Use --peer AGENT_UUID and --message TEXT together.');
         if (v.peer && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v.peer)) throw new UsageError('--peer must be an agent UUID.');
         if (v.message !== undefined && (!v.message.trim() || Buffer.byteLength(v.message) > 32768)) throw new UsageError('--message must contain 1–32768 bytes.');
-        const tui = useTui({ noTui: v['no-tui'], events: v.events }) ? new AgentTui(name, stop) : undefined;
-        try { await startAgent(name, { takeover: v.takeover, signal: controller.signal, log: tui?.log ?? log,
-          controls: tui && !v['no-input'] ? tui.setControls : undefined,
-          events: v.events ? event => new Promise<void>(resolve => { process.stdout.write(JSON.stringify(event) + '\n', () => resolve()); }) : tui?.events,
+        await startAgent(name, { takeover: v.takeover, signal: controller.signal, log,
+          controls: tuiChild && !v['no-input'] ? attachTuiControls : undefined,
+          events: tuiChild || v.events ? async event => {
+            if (tuiChild) await tuiEvent(event);
+            if (v.events) await new Promise<void>(resolve => { process.stdout.write(JSON.stringify(event) + '\n', () => resolve()); });
+          } : undefined,
           closeSessions: v['close-sessions'], peer: v.peer, message: v.message,
           turnTimeout: integer(v['turn-timeout'], 300, '--turn-timeout'),
-          askUser: prompts.interactive && tui ? tui.ask : prompts.interactive ? async (sessionId, question, signal) => {
+          askUser: prompts.interactive ? async (sessionId, question, signal) => {
             if (question) log(`Session ${sessionId} needs your input: ${question.replace(/[\x00-\x1f\x7f]/g, ' ')}`);
             return new Prompts(signal).ask('Local answer', 'Only local input can resolve this request.');
           } : undefined,
-        }); } finally { tui?.stop(); }
+        });
         return;
       }
       if (action === 'status') {
@@ -280,7 +296,7 @@ async function main() {
         return;
       }
       const agentId = v['agent-id'] ?? await prompts.ask('Agent ID', 'Copy the agent UUID from the dashboard or use --agent-id UUID.');
-      const instructions = v.task ?? (v['objective-file'] ? await objectiveFile(v['objective-file'], controller.signal) :
+      const instructions = v.task ?? (v['objective-file'] ? await objectiveFile(v['objective-file'], controller.signal, prompts.interactive) :
         await prompts.ask('Agent instructions', 'Use --task TEXT or --objective-file FILE.'));
       const apiKey = process.env.RENDEZVOUS_AGENT_API_KEY || await prompts.ask('Agent API key',
         'Provide RENDEZVOUS_AGENT_API_KEY for noninteractive setup.', { secret: true });
@@ -544,7 +560,7 @@ async function main() {
         objective = (
           v.task ??
           (v["objective-file"]
-            ? await objectiveFile(v["objective-file"], controller.signal)
+            ? await objectiveFile(v["objective-file"], controller.signal, prompts.interactive)
             : state?.objective) ??
           (v.session
             ? "Continue the existing task in this conversation and coordinate with the room. Share only information relevant to that task."
@@ -664,10 +680,13 @@ async function main() {
         `Joined room ${state.roomId}\nAgent: ${agentLabels[selected]}\nWorkspace: ${workspace}\nPrivate state: ${statePath}\nResume: ${invocation} join --state ${quote(statePath)}\nCtrl+C to disconnect.`,
       );
       const current = state;
+      const runtime = createRuntime(selected, workspace, timeout, executable);
+      const progress = executionEvents(tuiChild ? tuiEvent : undefined, { harness: selected, sessionId: state.roomId }, [state.token]);
       await listen({
         state,
         client: new RoomClient(state.origin, state.roomId, state.token),
-        runtime: createRuntime(selected, workspace, timeout, executable),
+        runtime,
+        events: tuiChild ? progress : undefined,
         signal: controller.signal,
         log,
         maxTurns,
@@ -702,6 +721,7 @@ async function main() {
   } finally {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
+    if (tuiChild) process.removeListener("disconnect", stop);
   }
 }
 process.stdout.on("error", (error) => {

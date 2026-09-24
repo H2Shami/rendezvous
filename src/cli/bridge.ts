@@ -1,3 +1,4 @@
+import type { EventSink } from './agent-events.js';
 import { agentLabels } from './config.js';
 import { setTimeout as delay } from "node:timers/promises";
 import type { MessagePage } from "../types.js";
@@ -37,6 +38,7 @@ export async function listen(options: {
   save: () => Promise<void>;
   log: (message: string) => void;
   maxTurns?: number;
+  events?: EventSink;
   onNeedsUser?: (signal: AbortSignal) => Promise<string>;
 }) {
   const { state, client, runtime, signal, save, log } = options;
@@ -44,6 +46,7 @@ export async function listen(options: {
     throw new Error(
       "Previous turn/delivery was interrupted. Inspect room and agent history before using --retry-interrupted (may repeat actions/messages).",
     );
+  const emit: EventSink = event => { try { options.events?.({ sessionId: state.roomId, ...event }); } catch { /* Display cannot fail a turn. */ } };
   const maxTurns = options.maxTurns ?? Infinity;
   const inputController = new AbortController();
   const inputSignal = AbortSignal.any([signal, inputController.signal]);
@@ -64,6 +67,7 @@ export async function listen(options: {
   let turns = 0;
   let backoff = 1000;
   try {
+  emit({ kind: 'waiting_peer' });
   log('Listening for room messages. Ctrl+C to disconnect.');
   if (state.pendingUser) requestInput();
   while (!signal.aborted) {
@@ -99,16 +103,19 @@ export async function listen(options: {
         error instanceof HttpError && error.status === 429
           ? Math.max(backoff, Math.min(error.retryAfter * 1000, 300_000))
           : backoff;
+      emit({ kind: 'recovering' });
       log(`Connection unavailable; retrying in ${Math.ceil(wait / 1000)}s.`);
       await delay(wait, undefined, { signal });
       backoff = Math.min(backoff * 2, 30_000);
       continue;
     }
     if (page.session_status === "closed" || page.session_status === "expired") {
+      emit({ kind: 'closed', text: page.session_status });
       log(`Room ${page.session_status}; listener stopped.`);
       return;
     }
     const incoming = page.messages.filter((m) => m.sequence > state.cursor);
+    for (const message of incoming) if (message.sender_id !== state.participantId) emit({ kind: 'received', sequence: message.sequence, text: `${message.sender_id}: ${message.content}` });
     const roster = JSON.stringify(page.participants);
     const needsTurn =
       !state.initialized ||
@@ -128,18 +135,26 @@ export async function listen(options: {
     log(
       `Starting ${state.threadId ? "resumed" : "new"} ${agentLabels[state.agent ?? "codex"]} turn (${turns + 1}${Number.isFinite(maxTurns) ? `/${maxTurns}` : ""}).`,
     );
+    emit({ kind: 'turn_started', threadId: state.threadId });
     const result = await runtime.run(
       roomPrompt(state, { ...page, messages: incoming }),
       state.threadId,
       signal,
       async (id) => {
         state.threadId = id;
+        emit({ kind: 'thread', threadId: id });
         await save();
       },
+      emit,
     );
     // Do not retry sends automatically: this API has no idempotency key. A lost response
     // leaves inFlight set, requiring human reconciliation instead of duplicate delivery.
-    if (result.message !== null) await client.send(result.message, signal);
+    if (result.message !== null) {
+      emit({ kind: 'reply_sending' });
+      await client.send(result.message, signal);
+      emit({ kind: 'reply_sent', text: result.message });
+    } else emit({ kind: 'silent' });
+    emit({ kind: 'turn_finished', text: result.status });
     state.cursor = page.cursor; // Never advance to our POST's sequence: a peer may have raced it.
     state.roster = roster;
     state.initialized = true;
@@ -150,6 +165,7 @@ export async function listen(options: {
       `Turn finished: ${result.status}${result.message ? "; reply sent" : "; no reply"}.`,
     );
     if (result.status === "NEEDS_USER") {
+      emit({ kind: 'waiting_user', text: result.message ?? undefined });
       state.pendingUser = true;
       await save();
       if (result.message) log(`Agent needs your input: ${result.message.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')}`);
@@ -159,6 +175,7 @@ export async function listen(options: {
       log('Turn limit reached; restart explicitly to continue.');
       return;
     }
+    if (!state.pendingUser) emit({ kind: 'waiting_peer' });
     log('Listening for room messages. Ctrl+C to disconnect.');
     if (state.pendingUser) requestInput();
     // DONE is advisory until the server implements unanimous completion. Stay reachable.
