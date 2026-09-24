@@ -1,3 +1,4 @@
+import { executionEvents, type EventObserver } from './agent-events.js';
 import { join } from 'node:path';
 import lockfile from 'proper-lockfile';
 import { AgentClient, AgentClientError } from '../client/index.js';
@@ -28,6 +29,7 @@ export async function agentStatus(name: string, signal: AbortSignal) {
 }
 
 export async function startAgent(name: string, options: {
+  events?: EventObserver;
   takeover?: boolean;
   signal: AbortSignal;
   log: (message: string) => void;
@@ -38,6 +40,10 @@ export async function startAgent(name: string, options: {
   askUser?: ConversationOptions['askUser'];
 }) {
   const saved = await readProfile(name), directory = profileDirectory(name);
+  const secrets = Object.entries(process.env).filter(([key]) => /key|token|secret|password|credential/i.test(key)).map(([, value]) => value!).filter(Boolean);
+  secrets.push(await credential(directory));
+  const emit = executionEvents(options.events, { profile: name, agentId: saved.agentId, harness: saved.agent }, secrets);
+  emit({ kind: 'connecting', text: `Connecting to ${saved.origin}` });
   const compromised = new AbortController();
   const signal = AbortSignal.any([options.signal, compromised.signal]);
   const release = await lockfile.lock(directory, {
@@ -58,14 +64,16 @@ export async function startAgent(name: string, options: {
     catch { throw new AgentClientError('JOURNAL_ERROR', 'Could not read the agent journal. Preserve it and check its format and permissions.'); }
     if (!options.closeSessions && (previous?.pendingOpen || Object.values(previous?.sessions ?? {}).some(record => record?.turn || record?.pendingMessage)))
       throw new AgentClientError('RECOVERY_REQUIRED', 'Saved work was interrupted or delivery is uncertain. Inspect the room and harness transcript, then use --close-sessions to abandon saved sessions without rerunning work.');
+    if (previous?.connection) emit({ kind: 'recovering', text: 'Reconciling saved listener lease' });
     await client.connect({ takeover: options.takeover, signal });
     connected = true;
     await client.setAcceptingSessions(false);
     const conversations: ConversationOptions = { client, profile: saved, directory,
       runtime: createRuntime(saved.agent, saved.workspace, (options.turnTimeout ?? 300) * 1000, findAgentExecutable(saved.agent)),
-      log: options.log, askUser: options.askUser };
+      events: emit, log: options.log, askUser: options.askUser };
     if (options.closeSessions) await closeSavedSessions(conversations);
     await client.setAcceptingSessions(true);
+    emit({ kind: 'connected', text: 'Online; accepting sessions' });
     options.log(`Agent ${name} connected; accepting sessions. Press Ctrl+C to disconnect.`);
     try {
       for (const session of client.sessions) await converse(conversations, session);
@@ -75,6 +83,7 @@ export async function startAgent(name: string, options: {
       }
       for await (const session of client.offers()) await converse(conversations, session);
     } catch (error) {
+      emit({ kind: 'error', text: error instanceof AgentClientError ? agentErrorMessage(error) : 'Listener stopped; inspect local diagnostics' });
       if (!signal.aborted) throw error;
     }
     if (compromised.signal.aborted) throw compromised.signal.reason;
@@ -82,7 +91,7 @@ export async function startAgent(name: string, options: {
     // Failed acquisitions keep their intent for explicit retry. In particular, a
     // mismatched identity must never release the journal's saved receiver.
     try { if (connected) await client!.disconnect(); }
-    finally { if (!compromised.signal.aborted) await release(); }
+    finally { emit({ kind: 'disconnected', text: 'Listener disconnected' }); if (!compromised.signal.aborted) await release(); }
   }
   options.log(`Agent ${name} disconnected.`);
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, copyFile, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { EventInput } from '../src/cli/agent-events.js';
 import { CodexRuntime } from '../src/cli/runtime.js';
 
 test('runtime subprocess parses output, rejects failures and terminates on timeout/abort', {
@@ -15,7 +16,9 @@ test('runtime subprocess parses output, rejects failures and terminates on timeo
     await chmod(executable, 0o700);
     const runtime = new CodexRuntime(directory, 2000, executable);
     let thread: string | undefined;
-    const result = await runtime.run('reply', undefined, new AbortController().signal, async id => { thread = id; });
+    const events: EventInput[] = [];
+    const result = await runtime.run('reply', undefined, new AbortController().signal, async id => { thread = id; }, event => { events.push(event); });
+    assert.ok(events.some(e => e.kind === 'assistant' && e.text?.includes('fixture reply')));
     assert.equal(thread, 'fixture-thread'); assert.equal(result.message, 'fixture reply');
     await assert.rejects(runtime.run('invalid', undefined, new AbortController().signal, async () => {}));
     await assert.rejects(runtime.run('fail', undefined, new AbortController().signal, async () => {}), /Codex turn failed/);

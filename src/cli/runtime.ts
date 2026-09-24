@@ -1,3 +1,4 @@
+import { harnessProgress, type EventSink } from './agent-events.js';
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -16,6 +17,7 @@ export interface RuntimeAdapter {
     threadId: string | undefined,
     signal: AbortSignal,
     onThread: (id: string) => Promise<void>,
+    onEvent?: EventSink,
   ): Promise<TurnResult>;
 }
 
@@ -154,13 +156,14 @@ export class CodexRuntime implements RuntimeAdapter {
     threadId: string | undefined,
     signal: AbortSignal,
     onThread: (id: string) => Promise<void>,
+    onEvent?: EventSink,
   ): Promise<TurnResult> {
     signal.throwIfAborted();
     const directory = await mkdtemp(join(tmpdir(), "rendezvous-codex-"));
     const schema = join(directory, "response.json");
     try {
       await writeFile(schema, JSON.stringify(outputSchema), { mode: 0o600 });
-      return await this.execute(schema, prompt, threadId, signal, onThread);
+      return await this.execute(schema, prompt, threadId, signal, onThread, onEvent);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -172,6 +175,7 @@ export class CodexRuntime implements RuntimeAdapter {
     threadId: string | undefined,
     signal: AbortSignal,
     onThread: (id: string) => Promise<void>,
+    onEvent?: EventSink,
   ): Promise<TurnResult> {
     const child = spawn(
       this.executable,
@@ -205,8 +209,12 @@ export class CodexRuntime implements RuntimeAdapter {
     const timeout = setTimeout(stop, this.timeoutMs);
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
-    // Drain diagnostics without echoing potentially private context or tool output.
-    child.stderr.resume();
+    // Retain only bounded diagnostic lines; the display sink redacts them separately.
+    let diagnostics = 0;
+    const stderr = createInterface({ input: child.stderr });
+    stderr.on('line', line => {
+      if (diagnostics++ < 32) { try { onEvent?.({ kind: 'diagnostic', text: line.slice(0, 4096) }); } catch {} }
+    });
     child.stdin.on("error", () => {});
     const completion = new Promise<number | null>((resolve, reject) => {
       child.once("error", reject);
@@ -224,6 +232,9 @@ export class CodexRuntime implements RuntimeAdapter {
         if (line.length > 2_000_000)
           throw new Error("Runtime event too large.");
         const event = JSON.parse(line);
+        for (const progress of harnessProgress(this.agent, event)) {
+          try { onEvent?.(progress); } catch { /* Observer failures never alter execution. */ }
+        }
         if (this.agent !== "codex") {
           const id =
             this.agent === "opencode" ? event.sessionID : event.session_id;
@@ -283,6 +294,7 @@ export class CodexRuntime implements RuntimeAdapter {
         kill(true);
         await completion.catch(() => {});
       }
+      stderr.close();
       clearTimeout(timeout);
       clearTimeout(escalation);
       signal.removeEventListener("abort", stop);

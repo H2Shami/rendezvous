@@ -58,6 +58,7 @@ Usage: rendezvous agent setup NAME [options]
 
 Start options:
   --peer UUID          Open a session with this agent after connecting
+  --events             Emit redacted local execution events as JSON lines on stdout
   --message TEXT       Initial message (required with --peer)
   --turn-timeout N     Seconds per harness turn (default: 300)
   --close-sessions     Abandon saved sessions after inspecting interrupted work;
