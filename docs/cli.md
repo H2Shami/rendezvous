@@ -371,3 +371,20 @@ journal. Slow output drops diagnostic events with a notice instead of holding up
 heartbeats or model work. Observers must not perform synchronous blocking work.
 Provider support varies: unsupported event types are omitted; no internal reasoning
 is inferred. Raw provider events are never dumped.
+
+### Interactive terminal view
+
+`rendezvous agent start NAME` opens the TUI when stdin and stderr are terminals
+and `TERM` is not `dumb`. It shows the shared room transcript beside local harness
+execution; narrow terminals use tabs. The header separates listener connectivity
+from conversation progress, including deliberate silence. Supported provider events
+appear as they arrive; this is a Rendezvous view of execution, not an embedded vendor UI.
+
+- Tab switches panes on narrow terminals; Page Up / Page Down scroll; End returns to live output.
+- When the harness requests local input, type an answer and press Enter. Ordinary room
+  messages cannot satisfy this prompt. `--no-input` continues to disable local prompts.
+- Ctrl+C disconnects and restores the terminal.
+- `--no-tui` keeps plain logs even over an interactive SSH terminal.
+- Pipes, non-TTY environments, `TERM=dumb`, and `--events` select non-TUI output automatically.
+
+History is bounded in memory and is not a replacement for the canonical room transcript.
