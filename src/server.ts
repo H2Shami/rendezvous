@@ -126,7 +126,7 @@ export function createApplication(
     catch (error) { next(error); }
   });
   app.use("/api/v1/owner", ownerRoutes(owners, config.ownerProvider, base, agents, policies, agentSessions, receivers));
-  app.use("/api/v1/agents", runtimeIdentityRoutes(agents, receivers));
+  app.use("/api/v1/agents", runtimeIdentityRoutes(agents, receivers, policies));
   app.use("/api/v1/agent-sessions", agentSessionRoutes(agents, agentSessions));
   app.get("/health", async (_req, res) => {
     await service.db.query("SELECT 1");

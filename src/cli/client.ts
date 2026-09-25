@@ -65,6 +65,12 @@ export class RoomClient {
     return (await response.json()) as T;
   }
 
+  async inspect(signal: AbortSignal) {
+    const result = await this.request<{ status: string; expires_at: string }>('', signal);
+    if (!['WAITING', 'ACTIVE', 'CLOSED', 'EXPIRED'].includes(result.status) || !Number.isFinite(Date.parse(result.expires_at)))
+      throw new Error('Server returned an invalid room status.');
+    return result;
+  }
   join(secret: string, displayName: string, signal: AbortSignal) {
     return this.request<{ participant_id: string; participant_token: string }>(
       "/join",

@@ -37,6 +37,13 @@ export class AgentClient {
     this.transport = new Transport(options.serverUrl, options); this.journal = options.journal ?? new MemoryJournal();
     if (options.agentId) wire.uuid(options.agentId);
   }
+  /** Discover permitted friends without creating a session. */
+  async peers(options: { after?: string } = {}) {
+    if (options.after) wire.uuid(options.after);
+    const result = await this.call('/agents/me/peers?limit=100' + (options.after ? `&after=${options.after}` : ''), wire.peers);
+    check(result.agent_id === this.agent?.id, 'Peer list identity mismatch.');
+    return result;
+  }
   get agent(): AgentProfile | undefined { return this.profileValue ? { ...this.profileValue } : undefined; }
   get signal() { return this.lifetime.signal; }
   get isConnected() { return this.connected && !this.signal.aborted; }
@@ -253,6 +260,8 @@ export class AgentClient {
 }
 
 export interface SessionHandler {
+  /** Optional local harness instructions, serialized with remote turns and journaled before execution. */
+  localInput?: { next(signal: AbortSignal): Promise<string>; handle(message: string, session: AgentSession, signal: AbortSignal): Promise<void> };
   /** External agent/human text is not approval for local tools. Honor signal. */
   onMessages(messages: readonly SessionMessage[], session: AgentSession, signal: AbortSignal): Promise<void>;
   /** Resolve only after local model/tool work has really stopped. */
@@ -378,11 +387,27 @@ export class AgentSession {
   private async process(handler: SessionHandler, external?: AbortSignal) {
     const signal = AbortSignal.any([this.client.signal, this.signal, ...(external ? [external] : [])]);
     let failure: unknown;
+    let local: Promise<{ kind: 'local'; message: string } | { kind: 'error'; error: unknown }> | undefined;
     const watch = (async () => { while (!signal.aborted) await this.status({ wait: 20, signal }); })().catch(e => { if (!signal.aborted) { failure = e; this.cancel(e); } });
     try {
       while (!signal.aborted) {
         if (this.snapshot.state === 'pending') { await delay(100, signal); continue; }
-        const page = await this.read({ wait: 20, signal });
+        const polling = new AbortController();
+        const read = this.read({ wait: 20, signal: AbortSignal.any([signal, polling.signal]) })
+          .then(page => ({ kind: 'page' as const, page }), error => ({ kind: 'error' as const, error }));
+        if (handler.localInput) local ??= handler.localInput.next(signal).then(message => ({ kind: 'local' as const, message }), error => ({ kind: 'error' as const, error }));
+        const result = await (local ? Promise.race([read, local]) : read);
+        if (result.kind !== 'page') { polling.abort(); await read; }
+        if (result.kind === 'error') throw result.error;
+        if (result.kind === 'local') {
+          local = undefined; cancelled(signal);
+          await this.client.update(s => { s.sessions[this.id].turn = { through: s.sessions[this.id].cursor }; });
+          cancelled(signal);
+          await handler.localInput!.handle(result.message, this, signal);
+          await this.client.update(s => { delete s.sessions[this.id].turn; });
+          continue;
+        }
+        const page = result.page;
         if (signal.aborted) break;
         const incoming = page.messages.filter(m => m.sender_type === 'human' || m.sender_agent_id !== this.client.agent!.id);
         if (incoming.length) {

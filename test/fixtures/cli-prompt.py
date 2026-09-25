@@ -1,5 +1,5 @@
 # Exercise actual TTY prompts, including hidden input, without a terminal dependency.
-import json, os, pty, re, select, subprocess, sys, time
+import json, os, pty, re, select, signal, subprocess, sys, time
 def visible_line(data):
     # Render the cursor/erase operations readline uses, instead of merely finding
     # prompt text that may already have been erased from the terminal screen.
@@ -43,9 +43,12 @@ try:
         # Drain the initial redraw before deciding whether a human can see it.
         while select.select([master], [], [], .15)[0]:
             transcript += os.read(master, 65536)
-        if step['wait'] not in visible_line(transcript):
+        if not step.get('screen') and step['wait'] not in visible_line(transcript):
             raise RuntimeError('Prompt was erased from the visible terminal: ' + step['wait'])
-        os.write(master, step['send'].encode())
+        # This PTY has no controlling process group. Plain-mode Ctrl+C needs the
+        # signal a real terminal would deliver; raw TUI input still uses bytes.
+        if step.get('signal') == 'SIGINT': child.send_signal(signal.SIGINT)
+        else: os.write(master, step['send'].encode())
     deadline = time.monotonic() + 8
     while child.poll() is None:
         if time.monotonic() > deadline: raise RuntimeError('CLI did not finish')

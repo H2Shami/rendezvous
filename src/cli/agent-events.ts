@@ -2,9 +2,9 @@ import { stripVTControlCharacters } from 'node:util';
 
 export type EventKind = 'connecting' | 'connected' | 'recovering' | 'disconnected' | 'session' | 'received' |
   'turn_started' | 'thread' | 'assistant' | 'tool' | 'diagnostic' | 'turn_finished' | 'reply_sending' |
-  'reply_sent' | 'silent' | 'waiting_peer' | 'waiting_user' | 'local_input' | 'closed' | 'error' | 'dropped';
+  'reply_sent' | 'silent' | 'waiting_peer' | 'waiting_user' | 'local_input' | 'local_reply' | 'local_directive' | 'closed' | 'error' | 'dropped';
 export interface ExecutionEvent {
-  kind: EventKind; time: string; profile?: string; agentId?: string; harness?: string;
+  scope?: 'local'; kind: EventKind; time: string; profile?: string; agentId?: string; harness?: string;
   sessionId?: string; bindingId?: string; threadId?: string; turnId?: string;
   sequence?: number; text?: string;
 }

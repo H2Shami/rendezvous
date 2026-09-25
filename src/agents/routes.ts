@@ -51,7 +51,7 @@ export function ownerAgentRoutes(service: AgentIdentityService, policies?: Agent
   }
   return router;
 }
-export function runtimeIdentityRoutes(service: AgentIdentityService, receivers: ReceiverService) {
+export function runtimeIdentityRoutes(service: AgentIdentityService, receivers: ReceiverService, policies?: AgentPolicyService) {
   const router = Router();
   router.use('/me/receiver', async (req, res, next) => {
     const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
@@ -75,6 +75,13 @@ export function runtimeIdentityRoutes(service: AgentIdentityService, receivers: 
       if (!controller.signal.aborted) res.json(result);
     } catch (error) { if (!controller.signal.aborted) next(error); }
     finally { res.off('close', disconnect); }
+  });
+  if (policies) router.get('/me/peers', async (req, res) => {
+    const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+    const principal = await service.authenticate(token);
+    const result = await policies.contacts(principal.agent_id, identityPage(req.query));
+    const peers = await Promise.all(result.peers.map(async peer => ({ ...peer, availability: await receivers.presence(peer.id) })));
+    res.json({ protocol, agent_id: principal.agent_id, peers, next_cursor: result.next_cursor });
   });
   router.get('/me', async (req, res) => {
     exactFields(req.query, []);

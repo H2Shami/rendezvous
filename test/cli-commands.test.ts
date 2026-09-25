@@ -6,6 +6,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fixture } from './helpers.js';
+import { OwnerService } from '../src/owners/service.js';
+import { AgentClient } from '../src/client/index.js';
+import { AgentIdentityService } from '../src/agents/identity.js';
 
 function cli(args: string[], input?: string, env: NodeJS.ProcessEnv = {}) {
   return mkdtemp(join(tmpdir(), 'rendezvous-command-home-')).then(home => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveResult, reject) => {
@@ -121,6 +124,15 @@ test('created room file feeds a listener and resumes the saved conversation', {
     const resumed = JSON.parse(await readFile(stateFile, 'utf8'));
     assert.equal(resumed.participantId, saved.participantId);
     assert.equal(resumed.objective, 'Updated local instructions.');
+    const room = JSON.parse(created.stdout);
+    await f.service.close(room.session_id, new URL(room.owner_url).hash.slice(room.session_id.length + 2));
+    const closed = await cli(args, 'Do not run this.', env);
+    assert.equal(closed.code, 2); assert.match(closed.stderr, /room is closed/);
+    assert.doesNotMatch(closed.stderr, /Joined room|Starting .*turn/);
+    await f.db.query('DELETE FROM sessions WHERE id=$1', [room.session_id]);
+    const missing = await cli(args, 'Do not run this.', env);
+    assert.equal(missing.code, 2); assert.match(missing.stderr, /no longer available/);
+    assert.deepEqual(JSON.parse(await readFile(stateFile, 'utf8')), resumed);
   } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -203,7 +215,7 @@ test('join accepts URL or room/token and supports per-command agent selection', 
   } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
 });
 
-function terminal(command: string[], steps: { wait: string; send: string }[], env: NodeJS.ProcessEnv) {
+function terminal(command: string[], steps: { wait: string; send: string; screen?: boolean; signal?: 'SIGINT' }[], env: NodeJS.ProcessEnv) {
   return new Promise<{ code: number; stdout: string; transcript: string }>((resolveResult, reject) => {
     const child = spawn('python3', ['test/fixtures/cli-prompt.py'], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
@@ -213,6 +225,25 @@ function terminal(command: string[], steps: { wait: string; send: string }[], en
     child.stdin.end(JSON.stringify({ command, steps }));
   });
 }
+
+test('full terminal app runs setup with hidden IPC input and a second command', { skip: process.platform === 'win32', timeout: 25000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'rendezvous-workspace-'));
+  const apiKey = `agk_${randomUUID()}.${randomBytes(32).toString('base64url')}`;
+  try {
+    const result = await terminal([process.execPath, 'dist/cli/main.js'], [
+      { wait: 'Good work happens', send: '/run any\r', screen: true },
+      { wait: 'Command, without', send: `agent setup workspace-test --agent-id ${randomUUID()} --task "Review tests"\r`, screen: true },
+      { wait: 'Agent API key', send: apiKey + '\r', screen: true },
+      { wait: 'Saved agent profile workspace-test', send: '\x10show configuration\r', screen: true },
+      { wait: 'Agent: codex', send: '\x03', screen: true },
+    ], { RENDEZVOUS_HOME: home, RENDEZVOUS_AGENT_API_KEY: '', TERM: 'xterm-256color', NO_COLOR: '1' });
+    assert.equal(result.code, 130, result.transcript);
+    assert.equal(await readFile(join(home, 'agents', 'workspace-test', 'credential'), 'utf8'), apiKey + '\n');
+    assert.ok(!result.transcript.includes(apiKey));
+    assert.equal(result.stdout, '');
+    assert.ok(result.transcript.includes('\x1b[?1049l'));
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
 
 test('agent setup hides its API key in the terminal and saves it privately', {
   skip: process.platform === 'win32', timeout: 10000,
@@ -273,4 +304,112 @@ test('owner command recovers the printed creation link without revealing it in r
     const rows = await cli(['rooms', '--json'], undefined, env);
     assert.ok(!rows.stdout.includes(room.owner_url));
   } finally { await f.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('agent TUI and explicit plain mode both disconnect cleanly in a real terminal', { skip: process.platform === 'win32', timeout: 20000 }, async () => {
+  const f = await fixture(), home = await mkdtemp(join(tmpdir(), 'rendezvous-tui-cli-'));
+  const issuer = `https://${randomUUID()}.example`;
+  const owner = await new OwnerService(f.db, f.auth, f.now).establish(issuer, 'tui');
+  const identity = new AgentIdentityService(f.db, f.auth, f.now);
+  const agent = await identity.create(owner.id, { display_name: 'TUI test' });
+  const key = await identity.issueKey(owner.id, agent.id);
+  const friend = await identity.create(owner.id, { display_name: 'Known Friend' });
+  const friendKey = await identity.issueKey(owner.id, friend.id);
+  for (const [left, right] of [[agent, friend], [friend, agent]]) await f.app.policies.put(owner.id, left.id, right.id, { allow_inbound: true, allow_outbound: true });
+  const peer = new AgentClient({ serverUrl: f.base, apiKey: friendKey.api_key });
+  const env = { RENDEZVOUS_HOME: home, RENDEZVOUS_AGENT_API_KEY: key.api_key, PATH: `${home}:${process.env.PATH}`, TERM: 'xterm-256color' };
+  try {
+    await copyFile(new URL('./fixtures/agent-fake.mjs', import.meta.url), join(home, 'codex')); await chmod(join(home, 'codex'), 0o700);
+    const setup = await cli(['agent', 'setup', 'tui', '--agent-id', agent.id, '--server', f.base, '--task', 'Test', '--no-input'], undefined, env);
+    assert.equal(setup.code, 0, setup.stderr);
+    await peer.connect();
+    const offered = peer.offers();
+    const accepted = offered.next().then(async result => { await result.value!.accept(); return result.value!; });
+    for (const plain of [false, true]) {
+      const result = await terminal([process.execPath, 'dist/cli/main.js', 'agent', 'start', 'tui', ...(plain ? ['--no-tui'] : [])],
+        plain ? [{ wait: 'connected; accepting sessions', send: '', screen: true, signal: 'SIGINT' }] : [
+          { wait: 'Online', send: 'Hello privately\r', screen: true },
+          { wait: 'fixture reply', send: '\x10contact an agent\r', screen: true },
+          { wait: 'Known Friend', send: '\r', screen: true },
+          { wait: 'Opening message', send: 'Hello from the friend picker\r', screen: true },
+          { wait: 'Hello from the friend picker', send: '\x03', screen: true },
+        ], env);
+      assert.equal(result.code, 130, result.transcript);
+      assert.equal(result.transcript.includes('\x1b[?1049h'), !plain);
+      if (!plain) assert.ok(result.transcript.includes('\x1b[?1049l'));
+      assert.ok(!result.transcript.includes(key.api_key));
+      assert.equal(await f.app.receivers.presence(agent.id), 'offline');
+      if (!plain) {
+        const session = await accepted; await offered.return(undefined);
+        const page = await f.app.agentSessions.ownerMessages(owner.id, session.id, 0, 0);
+        assert.ok(page.messages.some(message => message.content === 'Hello from the friend picker'));
+        assert.ok(page.messages.every(message => !message.content.includes('Hello privately')));
+      }
+    }
+  } finally {
+    await peer.disconnect();
+    await f.db.query('DELETE FROM sessions WHERE id IN (SELECT id FROM agent_sessions WHERE initiator_agent_id=$1)', [agent.id]);
+    for (const table of ['agent_receivers', 'agent_connections', 'agent_credentials']) await f.db.query(`DELETE FROM ${table} WHERE agent_id=$1`, [friend.id]);
+    await f.db.query('DELETE FROM agents WHERE id=$1', [friend.id]);
+    for (const table of ['agent_receivers', 'agent_connections', 'agent_credentials']) await f.db.query(`DELETE FROM ${table} WHERE agent_id=$1`, [agent.id]);
+    await f.db.query('DELETE FROM agents WHERE id=$1', [agent.id]); await f.db.query('DELETE FROM owners WHERE id=$1', [owner.id]);
+    await f.stop(); await rm(home, { recursive: true, force: true });
+  }
+});
+
+
+test('--no-input keeps the TUI but NEEDS_USER never prompts or resumes before interruption', { skip: process.platform === 'win32', timeout: 20000 }, async () => {
+  const f = await fixture(), home = await mkdtemp(join(tmpdir(), 'rendezvous-tui-cli-'));
+  const issuer = `https://${randomUUID()}.example`;
+  const owner = await new OwnerService(f.db, f.auth, f.now).establish(issuer, 'tui');
+  const identity = new AgentIdentityService(f.db, f.auth, f.now);
+  const agent = await identity.create(owner.id, { display_name: 'TUI test' });
+  const key = await identity.issueKey(owner.id, agent.id);
+  const friend = await identity.create(owner.id, { display_name: 'Known Friend' });
+  const friendKey = await identity.issueKey(owner.id, friend.id);
+  for (const [left, right] of [[agent, friend], [friend, agent]]) await f.app.policies.put(owner.id, left.id, right.id, { allow_inbound: true, allow_outbound: true });
+  const peer = new AgentClient({ serverUrl: f.base, apiKey: friendKey.api_key });
+  const env = { RENDEZVOUS_HOME: home, RENDEZVOUS_AGENT_API_KEY: key.api_key, PATH: `${home}:${process.env.PATH}`, TERM: 'xterm-256color' };
+  try {
+    await copyFile(new URL('./fixtures/agent-fake.mjs', import.meta.url), join(home, 'codex')); await chmod(join(home, 'codex'), 0o700);
+    const setup = await cli(['agent', 'setup', 'tui', '--agent-id', agent.id, '--server', f.base, '--task', 'Test', '--no-input'], undefined, env);
+    assert.equal(setup.code, 0, setup.stderr);
+    // A real harness process asks for input, with no test-only changes to CLI behavior.
+    const fake = await readFile(join(home, 'codex'), 'utf8');
+    await writeFile(join(home, 'codex'), fake.replace("status: 'ACTIVE'", "status: 'NEEDS_USER'"));
+    await peer.connect();
+
+    const offers = peer.offers();
+    try {
+      const accepted = offers.next().then(async result => {
+        assert.ok(result.value);
+        await result.value.accept();
+        await result.value.send('Please review the scope.');
+      });
+      const [result] = await Promise.all([
+        terminal([process.execPath, 'dist/cli/main.js', 'agent', 'start', 'tui', '--no-input',
+          '--peer', friend.id, '--message', 'Begin review'], [
+          { wait: 'Waiting for LOCAL input', send: '\x03', screen: true },
+        ], { ...env, FIXTURE_LOG: join(home, 'harness.jsonl') }),
+        accepted,
+      ]);
+      assert.equal(result.code, 130, result.transcript);
+      assert.ok(result.transcript.includes('\x1b[?1049h'), '--no-input does not disable the TUI');
+      assert.ok(result.transcript.includes('\x1b[?1049l'), 'interruption restores the terminal');
+      assert.doesNotMatch(result.transcript, /Local answer|PRIVATE CHAT|\[ Contact friend \]/,
+        'no local approval prompt, private composer, or manual listener controls');
+      assert.ok(!result.transcript.includes(key.api_key));
+      const turns = (await readFile(join(home, 'harness.jsonl'), 'utf8')).trim().split('\n');
+      assert.equal(turns.length, 1, 'NEEDS_USER is not automatically answered or rerun');
+      assert.equal(await f.app.receivers.presence(agent.id), 'offline');
+    } finally { await offers.return(undefined); }
+  } finally {
+    await peer.disconnect();
+    await f.db.query('DELETE FROM sessions WHERE id IN (SELECT id FROM agent_sessions WHERE initiator_agent_id=$1)', [agent.id]);
+    for (const table of ['agent_receivers', 'agent_connections', 'agent_credentials']) await f.db.query(`DELETE FROM ${table} WHERE agent_id=$1`, [friend.id]);
+    await f.db.query('DELETE FROM agents WHERE id=$1', [friend.id]);
+    for (const table of ['agent_receivers', 'agent_connections', 'agent_credentials']) await f.db.query(`DELETE FROM ${table} WHERE agent_id=$1`, [agent.id]);
+    await f.db.query('DELETE FROM agents WHERE id=$1', [agent.id]); await f.db.query('DELETE FROM owners WHERE id=$1', [owner.id]);
+    await f.stop(); await rm(home, { recursive: true, force: true });
+  }
 });

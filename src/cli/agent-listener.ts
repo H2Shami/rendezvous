@@ -1,4 +1,5 @@
 import { executionEvents, type EventObserver } from './agent-events.js';
+import { controlledConversations, type AgentControls } from './agent-controls.js';
 import { join } from 'node:path';
 import lockfile from 'proper-lockfile';
 import { AgentClient, AgentClientError } from '../client/index.js';
@@ -30,6 +31,7 @@ export async function agentStatus(name: string, signal: AbortSignal) {
 
 export async function startAgent(name: string, options: {
   events?: EventObserver;
+  controls?: (controls?: AgentControls) => void;
   takeover?: boolean;
   signal: AbortSignal;
   log: (message: string) => void;
@@ -76,12 +78,16 @@ export async function startAgent(name: string, options: {
     emit({ kind: 'connected', text: 'Online; accepting sessions' });
     options.log(`Agent ${name} connected; accepting sessions. Press Ctrl+C to disconnect.`);
     try {
-      for (const session of client.sessions) await converse(conversations, session);
-      if (options.peer) {
-        const session = await client.open(options.peer);
-        await converse(conversations, session, options.message!);
+      if (options.controls) {
+        await controlledConversations(conversations, options.controls, options.peer ? { peer: options.peer, message: options.message! } : undefined);
+      } else {
+        for (const session of client.sessions) await converse(conversations, session);
+        if (options.peer) {
+          const session = await client.open(options.peer);
+          await converse(conversations, session, options.message!);
+        }
+        for await (const session of client.offers()) await converse(conversations, session);
       }
-      for await (const session of client.offers()) await converse(conversations, session);
     } catch (error) {
       emit({ kind: 'error', text: error instanceof AgentClientError ? agentErrorMessage(error) : 'Listener stopped; inspect local diagnostics' });
       if (!signal.aborted) throw error;

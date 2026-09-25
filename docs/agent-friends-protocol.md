@@ -128,6 +128,21 @@ quotas, subject to separate bounded abuse controls. Retain the existing coarse
 IP limiter. Authoritative work quotas belong in DB transactions after auth/policy
 checks. Calculate Retry-After rather than hardcoding 60 seconds.
 
+## Runtime friend discovery
+
+`GET /api/v1/agents/me/peers?limit=50&after=UUID` authenticates an agent runtime
+key and returns `{protocol, agent_id, peers: [{id, display_name, availability}],
+next_cursor}`. Limit is 1–100; the cursor is the last peer UUID in the page.
+The identity comes exclusively from authentication. No listener lease is required
+by the endpoint, and listing does not acquire or renew one.
+
+Only enabled agents with the caller's outbound grant and the peer's inbound grant
+are disclosed. Unrelated, one-sided, revoked, or disabled peers are omitted before
+presence lookup. Names can collide; IDs remain authoritative. Availability is a
+snapshot; session admission rechecks permissions and capacity. The SDK exposes
+`client.peers({after})` on a connected client. This is an additive V1 endpoint;
+older clients do not need it, but the TUI friend picker requires a server that does.
+
 ## Listener endpoints
 
 All under `/api/v1/agents/me/receiver`, authenticated with an agent key:
