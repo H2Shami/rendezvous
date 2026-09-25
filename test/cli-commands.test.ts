@@ -356,3 +356,60 @@ test('agent TUI and explicit plain mode both disconnect cleanly in a real termin
     await f.stop(); await rm(home, { recursive: true, force: true });
   }
 });
+
+
+test('--no-input keeps the TUI but NEEDS_USER never prompts or resumes before interruption', { skip: process.platform === 'win32', timeout: 20000 }, async () => {
+  const f = await fixture(), home = await mkdtemp(join(tmpdir(), 'rendezvous-tui-cli-'));
+  const issuer = `https://${randomUUID()}.example`;
+  const owner = await new OwnerService(f.db, f.auth, f.now).establish(issuer, 'tui');
+  const identity = new AgentIdentityService(f.db, f.auth, f.now);
+  const agent = await identity.create(owner.id, { display_name: 'TUI test' });
+  const key = await identity.issueKey(owner.id, agent.id);
+  const friend = await identity.create(owner.id, { display_name: 'Known Friend' });
+  const friendKey = await identity.issueKey(owner.id, friend.id);
+  for (const [left, right] of [[agent, friend], [friend, agent]]) await f.app.policies.put(owner.id, left.id, right.id, { allow_inbound: true, allow_outbound: true });
+  const peer = new AgentClient({ serverUrl: f.base, apiKey: friendKey.api_key });
+  const env = { RENDEZVOUS_HOME: home, RENDEZVOUS_AGENT_API_KEY: key.api_key, PATH: `${home}:${process.env.PATH}`, TERM: 'xterm-256color' };
+  try {
+    await copyFile(new URL('./fixtures/agent-fake.mjs', import.meta.url), join(home, 'codex')); await chmod(join(home, 'codex'), 0o700);
+    const setup = await cli(['agent', 'setup', 'tui', '--agent-id', agent.id, '--server', f.base, '--task', 'Test', '--no-input'], undefined, env);
+    assert.equal(setup.code, 0, setup.stderr);
+    // A real harness process asks for input, with no test-only changes to CLI behavior.
+    const fake = await readFile(join(home, 'codex'), 'utf8');
+    await writeFile(join(home, 'codex'), fake.replace("status: 'ACTIVE'", "status: 'NEEDS_USER'"));
+    await peer.connect();
+
+    const offers = peer.offers();
+    try {
+      const accepted = offers.next().then(async result => {
+        assert.ok(result.value);
+        await result.value.accept();
+        await result.value.send('Please review the scope.');
+      });
+      const [result] = await Promise.all([
+        terminal([process.execPath, 'dist/cli/main.js', 'agent', 'start', 'tui', '--no-input',
+          '--peer', friend.id, '--message', 'Begin review'], [
+          { wait: 'Waiting for LOCAL input', send: '\x03', screen: true },
+        ], { ...env, FIXTURE_LOG: join(home, 'harness.jsonl') }),
+        accepted,
+      ]);
+      assert.equal(result.code, 130, result.transcript);
+      assert.ok(result.transcript.includes('\x1b[?1049h'), '--no-input does not disable the TUI');
+      assert.ok(result.transcript.includes('\x1b[?1049l'), 'interruption restores the terminal');
+      assert.doesNotMatch(result.transcript, /Local answer|PRIVATE CHAT|\[ Contact friend \]/,
+        'no local approval prompt, private composer, or manual listener controls');
+      assert.ok(!result.transcript.includes(key.api_key));
+      const turns = (await readFile(join(home, 'harness.jsonl'), 'utf8')).trim().split('\n');
+      assert.equal(turns.length, 1, 'NEEDS_USER is not automatically answered or rerun');
+      assert.equal(await f.app.receivers.presence(agent.id), 'offline');
+    } finally { await offers.return(undefined); }
+  } finally {
+    await peer.disconnect();
+    await f.db.query('DELETE FROM sessions WHERE id IN (SELECT id FROM agent_sessions WHERE initiator_agent_id=$1)', [agent.id]);
+    for (const table of ['agent_receivers', 'agent_connections', 'agent_credentials']) await f.db.query(`DELETE FROM ${table} WHERE agent_id=$1`, [friend.id]);
+    await f.db.query('DELETE FROM agents WHERE id=$1', [friend.id]);
+    for (const table of ['agent_receivers', 'agent_connections', 'agent_credentials']) await f.db.query(`DELETE FROM ${table} WHERE agent_id=$1`, [agent.id]);
+    await f.db.query('DELETE FROM agents WHERE id=$1', [agent.id]); await f.db.query('DELETE FROM owners WHERE id=$1', [owner.id]);
+    await f.stop(); await rm(home, { recursive: true, force: true });
+  }
+});

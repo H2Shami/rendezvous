@@ -429,8 +429,12 @@ palette. `rendezvous agent start NAME` also opens the app with that listener sel
   **Close conversation** asks for confirmation and leaves that listener online.
   **Stop selected process** disconnects it. **Quit** confirms before stopping all
   active work; Ctrl+C stops all processes immediately and restores the terminal.
-- `--no-input` disables that listener's manual session controls and local prompts.
-  A process must be selected and online for manual session controls to be available.
+- `--no-input` disables that listener's manual session controls and local prompts,
+  but keeps the TUI when running in a capable terminal. If the harness returns
+  `NEEDS_USER`, it waits without prompting or automatically answering until the
+  listener is interrupted; Ctrl+C still shuts down cleanly. Add `--no-tui` for
+  plain terminal output. A process must be selected and online for manual session
+  controls to be available.
 
 The app runs the same CLI handlers in child processes over private IPC, including
 secure prompts and execution events. It does not duplicate credentials or session
