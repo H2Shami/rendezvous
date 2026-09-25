@@ -8,13 +8,16 @@ import { listProfiles, type AgentProfile } from './profiles.js';
 import { ownedRooms, readConfig, type Config, type LocalRoom } from './config.js';
 import { displayText, type ExecutionEvent } from './agent-events.js';
 import { AgentTuiModel } from './agent-tui.js';
-import { statusColor, palette as p, TuiScreen } from './tui-screen.js';
+import { statusColor, palette as p, textWidth, TuiScreen } from './tui-screen.js';
 import { tuiActions, type TuiAction } from './tui-actions.js';
 
 interface Choice { id: string; title: string; detail: string; status?: string; disabled?: boolean }
 interface Picker { title: string; rows: Choice[]; choose: (row: Choice) => void; request?: string; loading?: boolean; error?: string }
 interface Prompt { id: string; label: string; hint: string; secret: boolean; defaultValue?: string }
-interface Job { id: string; title: string; child: ChildProcess; model: AgentTuiModel; output: string[]; running: boolean; code?: number | null; prompt?: Prompt; controls?: boolean; chatRequest?: string }
+interface Job { id: string; title: string; child: ChildProcess; model: AgentTuiModel; output: string[]; running: boolean; code?: number | null; prompt?: Prompt; controls?: boolean; chatRequest?: string; drafts?: Partial<Record<Pane, string>>; draftSession?: string }
+type Pane = 'activity' | 'conversation' | 'execution' | 'output';
+const panes: Pane[] = ['activity', 'conversation', 'execution', 'output'];
+const paneLabels = { activity: 'Private chat', conversation: 'Session', execution: 'Execution', output: 'Output' };
 type View = 'home' | 'agents' | 'rooms' | 'settings' | 'jobs' | 'job';
 interface Form { action: TuiAction; values: Record<string, string>; field: number; job?: string; session?: string }
 const nav: { id: View; title: string; hint: string }[] = [
@@ -82,6 +85,17 @@ export class RendezvousTui {
   constructor(private entry: string, private stdin = process.stdin, private stderr = process.stderr) {}
   private safe = (value: string) => displayText(value, this.secrets);
   private job() { return this.jobs.find(job => job.id === this.selectedJob); }
+  private saveDraft() {
+    const job = this.job();
+    if (this.view === 'job' && !this.form && !this.picker && !this.paletteOpen && job && !job.prompt) { (job.drafts ??= {})[this.pane] = this.input; }
+  }
+  private switchPane(pane: Pane) {
+    if (this.job()?.prompt) return;
+    this.saveDraft(); this.pane = pane; this.scroll = 0;
+    const job = this.job(); this.input = job?.drafts?.[pane] ?? '';
+    if (job && pane === 'conversation' && !this.input) job.draftSession = job.model.session;
+    this.changed();
+  }
   private changed() { this.dirty = true; }
   async refresh() {
     const results = await Promise.allSettled([listProfiles(), ownedRooms(), readConfig()]);
@@ -126,6 +140,10 @@ export class RendezvousTui {
   }
   launch(args: string[]) {
     if (this.closing) return;
+    if (args[0] === 'agent' && args[1] === 'start') {
+      const existing = this.jobs.find(j => j.running && j.model.profile === args[2]);
+      if (existing) { this.selectedJob = existing.id; this.view = 'job'; this.pane = 'activity'; this.input = existing.drafts?.activity ?? ''; this.scroll = 0; this.changed(); return; }
+    }
     if (this.jobs.filter(job => job.running).length >= 8) { this.notice = 'Stop a process before starting more work (8 active processes maximum).'; return; }
     const child = fork(this.entry, args, { execArgv: process.execArgv.filter(arg => !arg.startsWith('--test')),
       env: { ...process.env, RENDEZVOUS_TUI_CHILD: '1', NO_COLOR: '1', FORCE_COLOR: '0' }, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
@@ -133,7 +151,7 @@ export class RendezvousTui {
     const title = args[0] === 'agent' ? `Agent ${args[1]}${args[2] ? ` · ${args[2]}` : ''}` : `${args[0] === '--version' ? 'Version' : args[0]}`;
     const job: Job = { id: randomUUID(), title: this.safe(title), child, model: new AgentTuiModel(args[0] === 'agent' ? args[2] ?? 'Agent' : 'Room'), output: [], running: true };
     this.jobs.push(job); if (this.jobs.length > 30) { const i = this.jobs.findIndex(j => !j.running); if (i >= 0) this.jobs.splice(i, 1); }
-    this.selectedJob = job.id; this.view = 'job'; this.pane = args.includes('start') || args[0] === 'join' || args[0] === 'create' && !args.includes('--no-join') ? 'activity' : 'output';
+    this.selectedJob = job.id; this.view = 'job'; this.pane = args.includes('start') ? 'activity' : args[0] === 'join' || args[0] === 'create' && !args.includes('--no-join') ? 'conversation' : 'output';
     this.input = ''; this.scroll = 0;
     const append = (text: string) => { job.output.push(this.safe(text)); if (job.output.length > 250) job.output.shift(); this.changed(); };
     for (const stream of [child.stdout!, child.stderr!]) {
@@ -148,6 +166,7 @@ export class RendezvousTui {
       if (message?.type === 'event' && message.event && typeof message.event.kind === 'string' && typeof message.event.time === 'string') {
         const event = message.event as ExecutionEvent;
         job.model.add({ ...event, ...(event.text ? { text: this.safe(event.text) } : {}) });
+        if (event.kind === 'session' && !job.drafts?.conversation && !(this.selectedJob === job.id && this.pane === 'conversation' && this.input)) job.draftSession = job.model.session;
       } else if (message?.type === 'prompt' && typeof message.id === 'string' && typeof message.label === 'string') {
         job.prompt = { id: message.id, label: this.safe(message.label), hint: this.safe(message.hint ?? ''), secret: !!message.secret, defaultValue: message.defaultValue };
         // A background request is announced, never allowed to steal typed input.
@@ -156,7 +175,7 @@ export class RendezvousTui {
       else if (message?.type === 'peers_result') this.receivePeers(job, message);
       else if (message?.type === 'controls') job.controls = !!message.available;
       else if (message?.type === 'control_result') {
-        if (job.chatRequest === message.id) { job.chatRequest = undefined; if (message.ok && this.selectedJob === job.id && !this.form && !this.picker && !this.paletteOpen) this.input = ''; }
+        if (job.chatRequest === message.id) { job.chatRequest = undefined; if (message.ok && job.drafts) job.drafts[message.action === 'steer' ? 'conversation' : 'activity'] = '';  if (message.ok && this.pane === (message.action === 'steer' ? 'conversation' : 'activity') && this.selectedJob === job.id && !this.form && !this.picker && !this.paletteOpen) this.input = ''; }
         this.notice = message.ok ? message.action === 'steer' ? 'Instruction queued for the session harness.' : message.action === 'chat' ? 'Private message accepted.' : 'Action completed.' : this.safe(message.error ?? 'Action failed.');
       }
       this.changed();
@@ -237,9 +256,11 @@ export class RendezvousTui {
     if (!rows.length) this.notice = 'No permitted friends yet. Add a friend and enable outbound/inbound access in the dashboard.';
   }
   private pickerRows() { const query = this.input.toLowerCase(); return this.picker!.rows.filter(row => row.id === 'more' || `${row.title} ${row.detail}`.toLowerCase().includes(query)); }
-  private selectView(view: View) { this.view = view; this.selected = 0; this.input = ''; this.form = undefined; this.picker = undefined; this.paletteOpen = false; this.scroll = 0; this.changed(); if (view === 'agents') void this.refreshAgentStatuses(); if (view === 'rooms') { this.notice = 'Refreshing rooms from their servers…'; void this.refreshRooms().then(() => { if (this.notice === 'Refreshing rooms from their servers…') this.notice = ''; this.changed(); }); } }
+  private selectView(view: View) { this.saveDraft(); this.view = view; this.selected = 0; this.input = ''; this.form = undefined; this.picker = undefined; this.paletteOpen = false; this.scroll = 0; this.changed(); if (view === 'agents') void this.refreshAgentStatuses(); if (view === 'rooms') { this.notice = 'Refreshing rooms from their servers…'; void this.refreshRooms().then(() => { if (this.notice === 'Refreshing rooms from their servers…') this.notice = ''; this.changed(); }); } }
   private actions() { const query = this.input.replace(/^\//, '').toLowerCase(); return tuiActions.filter(a => `${a.id} ${a.title} ${a.description}`.toLowerCase().includes(query)); }
   activate(action: TuiAction, values: Record<string, string> = {}) {
+    if (nav.some(n => n.id === action.id)) { this.selectView(action.id as View); return; }
+    if (!this.paletteOpen && !this.form && !this.picker) this.saveDraft();
     this.paletteOpen = false; this.picker = undefined; this.input = ''; this.selected = 0; this.notice = '';
     if (action.id === 'open' && !values.peer) {
       const listeners = this.jobs.filter(j => j.running && j.controls);
@@ -298,6 +319,7 @@ export class RendezvousTui {
       } else if (action.id === 'open') {
         if (!job?.running || !job.controls) throw new Error('Select a running agent listener first.');
         job.child.send({ type: 'control', id: randomUUID(), action: 'open', peer: values.peer, message: values.message });
+        this.pane = 'conversation'; this.input = job.drafts?.conversation ?? ''; this.scroll = 0;
       } else this.launch(action.command!(values));
       this.form = undefined;
     } catch (error) { this.notice = this.safe(error instanceof Error ? error.message : 'Action failed.'); }
@@ -306,12 +328,13 @@ export class RendezvousTui {
   private key = (text: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean }) => {
     if (this.closing) return;
     if (key.ctrl && key.name === 'c') { this.requestQuit(); return; }
-    if (key.ctrl && key.name === 'p') { this.paletteOpen = !this.paletteOpen; this.form = undefined; this.picker = undefined; this.input = ''; this.selected = 0; this.changed(); return; }
+    if (key.ctrl && key.name === 'b' && this.view === 'job' && !this.form && !this.picker && !this.paletteOpen) { this.selectView('jobs'); return; }
+    if (key.ctrl && key.name === 'p') { if (!this.paletteOpen) this.saveDraft(); this.paletteOpen = !this.paletteOpen; this.form = undefined; this.picker = undefined; this.input = ''; this.selected = 0; this.changed(); return; }
     if (key.name === 'escape') { this.picker = undefined; this.form = undefined; this.paletteOpen = false; this.input = ''; this.notice = ''; this.changed(); return; }
     if (this.picker) {
       const rows = this.pickerRows();
       if (key.name === 'down') this.selected = Math.min(Math.max(0, rows.length - 1), this.selected + 1);
-      else if (key.name === 'up') this.selected = Math.max(0, this.selected - 1);
+      else if (key.name === 'up' || this.view === 'jobs' && key.name === 'left') this.selected = Math.max(0, this.selected - 1);
       else if (key.name === 'return' && rows[this.selected] && !this.picker.loading) {
         const row = rows[this.selected];
         if (row.disabled) this.notice = `Unavailable: ${row.detail}. Reopen this list to refresh.`;
@@ -330,7 +353,7 @@ export class RendezvousTui {
     } else if (this.paletteOpen) {
       const actions = this.actions();
       if (key.name === 'down') this.selected = Math.min(actions.length - 1, this.selected + 1);
-      else if (key.name === 'up') this.selected = Math.max(0, this.selected - 1);
+      else if (key.name === 'up' || this.view === 'jobs' && key.name === 'left') this.selected = Math.max(0, this.selected - 1);
       else if (key.name === 'return' && actions[this.selected]) this.activate(actions[this.selected]);
       else if (key.name === 'backspace') { this.input = [...this.input].slice(0, -1).join(''); this.selected = 0; }
       else if (!key.ctrl && !key.meta && text && !/[\x00-\x1f\x7f]/.test(text)) { this.input += text; this.selected = 0; }
@@ -345,23 +368,29 @@ export class RendezvousTui {
     } else if (this.view === 'job' && this.job()?.controls && this.job()?.running) {
       const job = this.job()!;
       if (text === '/' && !this.input) { this.paletteOpen = true; this.selected = 0; }
-      else if (key.name === 'tab') { this.pane = (['activity', 'conversation', 'execution', 'output'] as const)[(['activity', 'conversation', 'execution', 'output'].indexOf(this.pane) + 1) % 4]; this.scroll = 0; }
+      else if (key.name === 'tab') { this.switchPane(panes[(panes.indexOf(this.pane) + 1) % panes.length]); }
       else if (key.name === 'pageup') this.scroll = Math.min(10000, this.scroll + 8);
       else if (key.name === 'pagedown') this.scroll = Math.max(0, this.scroll - 8);
       else if (key.name === 'end') this.scroll = 0;
       else if (key.ctrl && key.name === 'u' && !job.chatRequest) this.input = '';
       else if (key.name === 'return' && this.input.trim() && !job.chatRequest) {
-        job.chatRequest = randomUUID(); this.pane = 'activity';
-        job.child.send({ type: 'control', id: job.chatRequest, action: 'chat', message: this.input.trim() });
+        if (this.pane !== 'activity' && this.pane !== 'conversation') { this.notice = 'Choose Private chat or Session to send a message.'; this.changed(); return; }
+        const steering = this.pane === 'conversation';
+        if (steering && (job.model.session === 'none' || job.draftSession !== job.model.session)) {
+          this.notice = 'Session unavailable or changed. Clear this draft (Ctrl+U), then reopen Session before writing a new instruction.'; this.changed(); return;
+        }
+        job.chatRequest = randomUUID();
+        job.child.send({ type: 'control', id: job.chatRequest, action: steering ? 'steer' : 'chat',
+          ...(steering ? { sessionId: job.draftSession } : {}), message: this.input.trim() });
       } else if (!job.chatRequest && key.name === 'backspace') this.input = [...this.input].slice(0, -1).join('');
       else if (!job.chatRequest && !key.ctrl && !key.meta && text && !/[\x00-\x1f\x7f]/.test(text)) this.input = (this.input + text).slice(0, 32768);
     } else if (text === '/') { this.paletteOpen = true; this.input = ''; this.selected = 0; }
-    else if (key.name === 'tab' && this.view === 'job') { this.pane = (['activity', 'conversation', 'execution', 'output'] as const)[(['activity', 'conversation', 'execution', 'output'].indexOf(this.pane) + 1) % 4]; this.scroll = 0; }
+    else if (key.name === 'tab' && this.view === 'job') { this.switchPane(panes[(panes.indexOf(this.pane) + 1) % panes.length]); }
     else if (key.name === 'pageup') this.scroll = Math.min(10000, this.scroll + 8);
     else if (key.name === 'pagedown') this.scroll = Math.max(0, this.scroll - 8);
     else if (key.name === 'end') this.scroll = 0;
-    else if (key.name === 'up') this.selected = Math.max(0, this.selected - 1);
-    else if (key.name === 'down') this.selected++;
+    else if (key.name === 'up' || this.view === 'jobs' && key.name === 'left') this.selected = Math.max(0, this.selected - 1);
+    else if (key.name === 'down' || this.view === 'jobs' && key.name === 'right') this.selected++;
     else if (key.name === 'return') this.openSelected();
     else if (text && /^[1-5]$/.test(text)) this.selectView(nav[Number(text) - 1].id);
     else if (text === 'n') this.activate(tuiActions.find(a => a.id === (this.view === 'agents' ? 'setup' : this.view === 'rooms' ? 'create' : 'start'))!);
@@ -371,11 +400,11 @@ export class RendezvousTui {
     if (this.view === 'agents' && this.profiles.length) {
       const profile = this.profiles[this.selected % this.profiles.length];
       const job = this.jobs.find(j => j.running && j.model.profile === profile.name);
-      if (job) { this.selectedJob = job.id; this.view = 'job'; this.pane = 'activity'; this.input = ''; this.scroll = 0; }
+      if (job) { this.selectedJob = job.id; this.view = 'job'; this.pane = 'activity'; this.input = job.drafts?.activity ?? ''; this.scroll = 0; }
       else this.activate(tuiActions.find(a => a.id === 'start')!, { profile: profile.name });
     }
     else if (this.view === 'rooms' && this.rooms.length) void this.chooseRoom(this.rooms[this.selected % this.rooms.length]);
-    else if (this.view === 'jobs' && this.jobs.length) { this.selectedJob = this.jobs[this.selected % this.jobs.length].id; this.view = 'job'; this.pane = 'activity'; this.input = ''; this.scroll = 0; }
+    else if (this.view === 'jobs' && this.jobs.length) { this.selectedJob = this.jobs[this.selected % this.jobs.length].id; this.view = 'job'; this.pane = this.job()?.model.profile === 'Room' ? 'conversation' : 'activity'; this.input = this.job()?.drafts?.[this.pane] ?? ''; this.scroll = 0; }
     else if (this.view === 'settings') this.activate(tuiActions.find(a => a.id === (this.selected % 2 ? 'config-server' : 'config-agent'))!);
     else if (this.view === 'home') this.activate(tuiActions.find(a => a.id === ['start', 'setup', 'create', 'join'][this.selected % 4])!);
   }
@@ -412,36 +441,84 @@ export class RendezvousTui {
       cards.forEach(([title, detail], i) => { const y = (height < 30 ? 16 : 18) + i * (height < 30 ? 1 : 2); this.hit(x, y, mainWidth, height < 30 ? 1 : 2, () => { this.selected = i; this.openSelected(); }); if (this.selected % 4 === i) s.text(x, y, '›', p.primary, true); s.text(x + 2, y, title, p.secondary, true); if (mainWidth > 60) s.text(x + 24, y, detail, p.muted, false, mainWidth - 24); });
     } else if (this.view === 'job') {
       const job = this.job();
-      s.text(x, 5, job?.title ?? 'No process selected', p.text, true, mainWidth);
-      if (job?.model.identity) s.text(x, 6, `${job.model.identity} · ${job.model.server.replace(/^Connecting to /, '')}`, p.muted, false, mainWidth);
+      s.text(x, 4, '← Active work · Ctrl+B', p.secondary, false, mainWidth);
+      this.hit(x, 4, 23, 1, () => this.selectView('jobs'));
+      s.text(x, 5, job?.model.profile === 'Room' ? job.title : job?.model.profile ?? 'No process selected', p.text, true, mainWidth);
+      if (job) s.text(x, 6, this.pane === 'activity' ? 'Private conversation · separate from friend sessions' : this.pane === 'conversation' ? job.model.session === 'none' ? 'No active friend session' : 'Shared session · participants and their owners can see replies' : `${job.model.identity} · ${job.model.server.replace(/^Connecting to /, '')}`, p.muted, false, mainWidth);
       s.text(x, 7, job?.running ? job.model.state : job?.code === 0 ? 'Completed' : 'Stopped', job?.running ? p.secondary : p.muted, false, Math.min(mainWidth, 44));
-      if (job && mainWidth > 75) s.text(x + 46, 7, `Session ${job.model.session.slice(0, 8)} · thread ${job.model.thread.slice(0, 12)}`, p.muted, false, mainWidth - 46);
-      s.text(x, 9, ['activity', 'conversation', 'execution', 'output'].map(tab => tab === this.pane ? `[ ${tab} ]` : `  ${tab}  `).join('  '), p.secondary, false, mainWidth);
+      if (job && mainWidth > 75 && (this.pane === 'execution' || this.pane === 'output')) s.text(x + 46, 7, `Session ${job.model.session.slice(0, 8)} · thread ${job.model.thread.slice(0, 12)}`, p.muted, false, mainWidth - 46);
       let tabX = x;
-      for (const tab of ['activity', 'conversation', 'execution', 'output'] as const) { this.hit(tabX, 9, tab.length + 6, 1, () => { this.pane = tab; this.scroll = 0; }); tabX += tab.length + 6; }
-      s.text(x, 8, '[ Contact friend ]   [ Steer session ]   [ Close conversation ]', p.secondary, false, mainWidth);
-      this.hit(x, 8, 18, 1, () => this.activate(tuiActions.find(a => a.id === 'open')!));
-      this.hit(x + 21, 8, 18, 1, () => this.activate(tuiActions.find(a => a.id === 'steer')!));
-      this.hit(x + 42, 8, 24, 1, () => this.activate(tuiActions.find(a => a.id === 'close')!));
-      const entries = job ? this.pane === 'activity' ? job.model.activity : this.pane === 'conversation' ? job.model.room : this.pane === 'execution' ? job.model.execution : job.output : [];
-      const visible: string[] = [];
-      for (const entry of entries) for (const line of entry.split('\n')) {
-        const chars = [...line]; for (let i = 0; i < Math.max(1, chars.length); i += Math.max(1, mainWidth - 4)) visible.push(chars.slice(i, i + mainWidth - 4).join(''));
+      for (const tab of panes) {
+        const label = paneLabels[tab], tabWidth = label.length + 4;
+        s.text(tabX, 9, this.pane === tab ? `[ ${label} ]` : `  ${label}  `, this.pane === tab ? p.secondary : p.muted, this.pane === tab, Math.max(0, x + mainWidth - tabX));
+        this.hit(tabX, 9, tabWidth, 1, () => this.switchPane(tab)); tabX += tabWidth + 1;
       }
+      if (job?.running && job.controls) {
+        s.text(x, 8, '[ Contact friend ]', p.secondary, false, mainWidth);
+        this.hit(x, 8, 18, 1, () => this.activate(tuiActions.find(a => a.id === 'open')!));
+        if (job.model.session !== 'none') {
+          s.text(x + 21, 8, '[ End session ]', p.secondary, false, mainWidth - 21);
+          this.hit(x + 21, 8, 15, 1, () => this.activate(tuiActions.find(a => a.id === 'close')!));
+        }
+      }
+      const chatPane = this.pane === 'activity' || this.pane === 'conversation';
+      const visible: { text: string; color: string; bold?: boolean; mine?: boolean }[] = [];
+      const wrap = (value: string, color: string, mine = false) => {
+        for (const paragraph of value.split('\n')) {
+          let line = '';
+          for (const char of paragraph) {
+            if (textWidth(line + char) > mainWidth - 6) { visible.push({ text: line, color, mine }); line = ''; }
+            line += char;
+          }
+          visible.push({ text: line, color, mine });
+        }
+      };
+      if (chatPane && job) {
+        for (const message of job.model.chat.filter(m => m.private === (this.pane === 'activity'))) {
+          visible.push({ text: `${message.sender}  ·  ${message.time}${message.session ? `  ·  ${message.session.slice(0, 8)}` : ''}`, color: message.mine ? p.secondary : p.success, bold: true, mine: message.mine });
+          wrap(message.text, p.text, message.mine);
+          visible.push({ text: '', color: p.muted });
+        }
+      } else for (const entry of job ? this.pane === 'execution' ? job.model.execution : job.output : []) wrap(entry, p.muted);
       const count = Math.max(1, height - 19), end = Math.max(0, visible.length - this.scroll);
       s.rect(x, 11, mainWidth, count + 1, p.panel);
-      visible.slice(Math.max(0, end - count), end).forEach((line, i) => s.text(x + 2, 12 + i, line, this.pane === 'execution' ? p.muted : p.text, false, mainWidth - 4));
-      if (!entries.length) s.text(x + 2, 12, 'Message your agent below, or choose Contact friend.', p.muted, false, mainWidth - 4);
+      visible.slice(Math.max(0, end - count), end).forEach((line, i) => {
+        if (line.mine) s.rect(x + 1, 12 + i, mainWidth - 2, 1, p.raised);
+        s.text(x + 2, 12 + i, line.text, line.color, line.bold, mainWidth - 4);
+      });
+      if (!visible.length) s.text(x + 2, 12, this.pane === 'activity' ? 'Your private conversation with this agent.' : this.pane === 'conversation' ? 'Contact a friend to begin a shared session.' : 'No diagnostics yet.', p.muted, false, mainWidth - 4);
       const prompt = job?.prompt;
       s.rect(x, height - 6, mainWidth, 3, p.raised); s.text(x, height - 6, '▌', p.primary);
-      s.text(x + 2, height - 6, prompt ? `${prompt.secret ? 'PRIVATE · ' : ''}${prompt.label}` : job?.controls ? 'PRIVATE CHAT · only you and this agent' : 'COMMANDS', p.secondary, true, mainWidth - 4);
-      s.text(x + 2, height - 5, prompt ? (prompt.secret ? '•'.repeat(Math.min(40, this.input.length)) : this.input) || prompt.defaultValue || 'Type your answer, then Enter…' : job?.controls ? this.input || (job.chatRequest ? 'Harness working…' : 'Message your agent… Enter sends · / commands') : '/ commands', prompt ? p.text : p.muted, false, mainWidth - 4);
+      s.text(x + 2, height - 6, prompt ? `${prompt.secret ? 'PRIVATE · ' : ''}${prompt.label}` : job?.controls && chatPane ? this.pane === 'conversation' ? 'SESSION INSTRUCTION · agent replies may be shared' : 'PRIVATE CHAT · only you and this agent' : 'COMMANDS', p.secondary, true, mainWidth - 4);
+      s.text(x + 2, height - 5, prompt ? (prompt.secret ? '•'.repeat(Math.min(40, this.input.length)) : this.input) || prompt.defaultValue || 'Type your answer, then Enter…' : job?.controls && chatPane ? this.input || (job.chatRequest ? 'Harness working…' : this.pane === 'conversation' ? job.model.session === 'none' ? 'No active session' : 'Guide your agent in this session… Enter sends' : 'Message your agent… Enter sends · / commands') : '/ commands · choose a chat tab to write', prompt ? p.text : p.muted, false, mainWidth - 4);
       if (prompt) s.text(x + 2, height - 4, prompt.hint, p.muted, false, mainWidth - 4);
+    } else if (this.view === 'jobs') {
+      s.text(x, 5, 'Active work', p.text, true);
+      s.text(x, 7, '[ + Start an agent ]', p.secondary);
+      this.hit(x, 7, 20, 1, () => this.activate(tuiActions.find(a => a.id === 'start')!));
+      const columns = mainWidth >= 90 ? 3 : mainWidth >= 58 ? 2 : 1;
+      const cardWidth = Math.floor((mainWidth - (columns - 1) * 2) / columns);
+      const page = columns * Math.max(1, Math.floor((height - 13) / 7));
+      const selected = this.jobs.length ? this.selected % this.jobs.length : 0;
+      const start = Math.floor(selected / page) * page;
+      this.jobs.slice(start, start + page).forEach((job, i) => {
+        const cx = x + (i % columns) * (cardWidth + 2), cy = 10 + Math.floor(i / columns) * 7;
+        const active = start + i === selected;
+        s.rect(cx, cy, cardWidth, 6, active ? p.raised : p.panel);
+        s.text(cx, cy, '┌' + '─'.repeat(cardWidth - 2) + '┐', active ? p.secondary : p.border);
+        s.text(cx, cy + 5, '└' + '─'.repeat(cardWidth - 2) + '┘', active ? p.secondary : p.border);
+        s.text(cx + 2, cy + 1, '●', job.running ? job.prompt ? '#fbbf24' : p.success : p.muted);
+        s.text(cx + 4, cy + 1, job.model.profile === 'Room' ? job.title : job.model.profile, p.text, true, cardWidth - 6);
+        s.text(cx + 2, cy + 2, job.running ? job.prompt ? 'Needs your input' : job.model.state : 'Stopped', p.secondary, false, cardWidth - 4);
+        s.text(cx + 2, cy + 3, job.model.session === 'none' ? 'Private chat · no session' : `Session ${job.model.session.slice(0, 8)}`, p.muted, false, cardWidth - 4);
+        s.text(cx + 2, cy + 4, 'Open →', p.muted, false, cardWidth - 4);
+        this.hit(cx, cy, cardWidth, 6, () => { this.selected = start + i; this.openSelected(); });
+      });
+      if (!this.jobs.length) s.text(x, 11, 'Start an agent to open its workspace.', p.muted);
     } else {
       const heading = nav.find(n => n.id === this.view)!; s.text(x, 5, heading.title, p.text, true); s.text(x, 7, heading.hint, p.muted);
       const entries = this.view === 'agents' ? this.profiles.map(a => [a.name, `${this.agentStatuses.get(a.name) ?? 'checking…'} · ${a.agent}`, a.origin])
         : this.view === 'rooms' ? this.rooms.map(r => [r.session_id, r.invite_url.split('/').slice(0, 3).join('/'), this.roomStatuses.get(r.room_file)?.detail ?? 'Not yet checked on server'])
-        : this.view === 'jobs' ? this.jobs.map(j => [j.title, j.running ? j.model.state : `Finished · ${j.code ?? 'signal'}`, j.prompt ? 'Needs local input' : j.model.session])
         : [['Default harness', this.config.agent ?? 'codex', 'Used when a command does not choose a harness'], ['Default server', this.config.server ?? 'https://dev.userendezvous.com', 'Command overrides remain available']];
       if (!entries.length) { s.text(x, 11, 'Nothing here yet.', p.secondary, true); s.text(x, 13, 'Press / to get started.', p.muted); }
       const selected = entries.length ? this.selected % entries.length : 0, page = Math.max(1, Math.floor((height - 14) / 4));

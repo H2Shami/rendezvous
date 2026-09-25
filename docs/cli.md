@@ -402,21 +402,23 @@ palette. `rendezvous agent start NAME` also opens the app with that listener sel
 - Press 1–5 for Home, Agents, Rooms, Active work, and Settings. Arrow keys select;
   Enter opens. Forms use Tab/Shift+Tab, arrows for choices, Ctrl+U to clear, and
   Enter to advance or submit the last field. Esc cancels a form.
-- Active work holds up to eight concurrent processes, so separate agent profiles
-  can listen on the same machine. Existing per-profile and harness locks still apply.
+- Active work shows separate selectable cards for up to eight concurrent processes.
+  Use **+ Start an agent** to add another listener; open any card to inspect it.
+  Ctrl+B returns to the cards without stopping the agent. Existing per-profile
+  and harness locks still apply.
 - The Agents tab refreshes availability when opened and every ten seconds while
   visible. Select a running agent to return to its workspace. The standalone
   `agent status` command remains available for headless use.
-- Starting an agent opens its Activity workspace with a private message composer.
+- Starting an agent opens its Private chat workspace with a private message composer.
   Type a message and press Enter; `/` or Ctrl+P opens commands. Private chat uses a
   separate persistent harness thread and never sends its output to a room.
-- **Steer session** explicitly sends local instructions to the current session's
+- The **Session** tab has a labeled instruction composer for the current session's
   harness; its resulting reply can be shared with the room. Private messages and
   steering serialize with peer-triggered turns. They do not satisfy a pending
   local approval prompt automatically; answer that prompt directly.
-- Tab switches between Activity, Conversation, Execution, and Output.
-  Activity combines injected messages, supported tool/assistant events, private
-  responses, and room replies. Raw command logs stay in Output. This displays the
+- Tab switches between Private chat, Session, Execution, and Output.
+  Chat shows labeled messages once; raw assistant events and tools stay in Execution.
+  Private and session drafts stay separate. Raw command logs stay in Output. This displays the
   harness event stream; it does not embed the vendor’s native terminal application.
   Page Up / Page Down scroll; End returns to live output. Execution shows supported
   public harness events, delivery progress, and intentional silence. Output contains

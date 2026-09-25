@@ -14,8 +14,8 @@ const states: Partial<Record<ExecutionEvent['kind'], string>> = {
 
 /** A bounded display model, independent of terminal I/O and execution state. */
 export class AgentTuiModel {
+  chat: { sender: string; text: string; private: boolean; time: string; session?: string; mine: boolean }[] = [];
   room: string[] = [];
-  activity: string[] = [];
   execution: string[] = [];
   state = 'Starting';
   listener = 'Starting';
@@ -38,9 +38,17 @@ export class AgentTuiModel {
     if (event.sessionId && event.kind !== 'closed') this.session = displayText(event.sessionId);
     if (event.threadId) this.thread = displayText(event.threadId);
     this.lastActivity = event.time.slice(11, 19);
-    const label: Partial<Record<ExecutionEvent['kind'], string>> = { received: 'Peer / room → harness', local_input: 'You → harness (private)', local_directive: 'You → session harness (reply may be shared)', local_reply: 'Agent → you (private)', reply_sent: 'Agent → room', turn_started: 'Harness working', assistant: 'Assistant', tool: 'Tool', diagnostic: 'Diagnostic', waiting_peer: 'Waiting for peer', thread: 'Harness thread' };
-    const activity = `${event.time.slice(11, 19)} ${event.scope === 'local' ? '[private] ' : ''}${label[event.kind] ?? event.kind}${event.text ? '\n' + displayText(event.text) : ''}`;
-    this.activity.push(activity); if (this.activity.length > 200) this.activity.shift();
+    const speakers: Partial<Record<ExecutionEvent['kind'], string>> = {
+      local_input: 'You', local_reply: this.profile, local_directive: 'You · session instruction',
+      received: 'Room', reply_sent: this.profile,
+    };
+    if (speakers[event.kind] && event.text) {
+      this.chat.push({ sender: speakers[event.kind]!, text: displayText(event.text),
+        private: event.kind === 'local_input' || event.kind === 'local_reply',
+        mine: event.kind === 'local_input' || event.kind === 'local_directive',
+        time: event.time.slice(11, 19), session: event.sessionId });
+      if (this.chat.length > 200) this.chat.shift();
+    }
     const line = displayText(eventLine(event));
     const target = ['received', 'reply_sent'].includes(event.kind) ? this.room : this.execution;
     target.push(line); if (target.length > 200) target.shift();

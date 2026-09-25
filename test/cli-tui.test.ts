@@ -137,5 +137,66 @@ test('agent cards show availability and the workspace renders an explicit privat
   app.jobs.push({ id: 'job', title: 'Agent reviewer', model, output: [], running: true, controls: true, child: {} as ChildProcess });
   app.view = 'job'; app.selectedJob = 'job';
   const screen = app.render(120, 36, false).join('\n');
-  assert.match(screen, /PRIVATE CHAT/); assert.match(screen, /Private answer/); assert.match(screen, /Steer session/);
+  assert.match(screen, /PRIVATE CHAT/); assert.match(screen, /Private answer/); assert.doesNotMatch(screen, /Steer session/);
+});
+
+
+test('chat shows final messages once, with separate private and shared transcripts', () => {
+  const app = new RendezvousTui('unused');
+  const model = new AgentTuiModel('Reviewer');
+  const time = '2026-09-24T12:00:00.000Z';
+  model.add({ kind: 'local_input', scope: 'local', time, text: 'Hello privately' });
+  model.add({ kind: 'assistant', scope: 'local', time, text: '{"message":"Private answer","status":"DONE"}' });
+  model.add({ kind: 'local_reply', scope: 'local', time, text: 'Private answer' });
+  model.add({ kind: 'received', time, sessionId: 'session-a', text: 'Peer: Shared question' });
+  app.jobs.push({ id: 'one', title: 'Agent Reviewer', model, output: [], running: true, controls: true, child: {} as ChildProcess });
+  app.selectedJob = 'one'; app.view = 'job';
+  const screen = app.render(120, 36, false).join('\n');
+  assert.equal(screen.match(/Private answer/g)?.length, 1);
+  assert.match(screen, /You  ·/); assert.match(screen, /Reviewer  ·/);
+  assert.doesNotMatch(screen, /"status"|Shared question|turn_finished/);
+  (app as any).switchPane('conversation');
+  const shared = app.render(120, 36, false).join('\n');
+  assert.match(shared, /Shared question/); assert.doesNotMatch(shared, /Private answer/);
+});
+
+test('composer separates drafts and routes explicit session instructions with stale-session protection', () => {
+  const app = new RendezvousTui('unused');
+  const sent: any[] = [];
+  const model = new AgentTuiModel('Reviewer'); model.session = 'session-a';
+  app.jobs.push({ id: 'one', title: 'Reviewer', model, output: [], running: true, controls: true,
+    child: { send: (message: any) => sent.push(message) } as unknown as ChildProcess });
+  app.selectedJob = 'one'; app.view = 'job';
+  app.input = 'Keep this private';
+  (app as any).switchPane('conversation'); assert.equal(app.input, '');
+  app.input = 'Guide the session';
+  (app as any).switchPane('activity'); assert.equal(app.input, 'Keep this private');
+  (app as any).key(undefined, { name: 'return' });
+  assert.equal(sent[0].action, 'chat'); assert.equal(sent[0].sessionId, undefined);
+  app.jobs[0].chatRequest = undefined;
+  (app as any).switchPane('conversation'); assert.equal(app.input, 'Guide the session');
+  (app as any).key(undefined, { name: 'return' });
+  assert.equal(sent[1].action, 'steer'); assert.equal(sent[1].sessionId, 'session-a');
+  app.jobs[0].chatRequest = undefined; model.session = 'session-b';
+  (app as any).key(undefined, { name: 'return' });
+  assert.equal(sent.length, 2, 'a stale draft cannot target a replacement session');
+});
+
+test('active work cards open independent agents and preserve drafts without stopping listeners', () => {
+  const app = new RendezvousTui('unused');
+  for (const name of ['Reviewer', 'Writer']) app.jobs.push({ id: name, title: name, model: new AgentTuiModel(name),
+    output: [], running: true, controls: true, child: {} as ChildProcess });
+  app.view = 'jobs';
+  const screen = app.render(120, 36, false).join('\n');
+  assert.match(screen, /Reviewer.*Writer/); assert.match(screen, /Start an agent/);
+  // Click the second card, then return using the keyboard shortcut.
+  (app as any).mouse(0, 80, 11, false);
+  assert.equal(app.selectedJob, 'Writer'); assert.equal(app.view, 'job');
+  app.input = 'Writer draft';
+  (app as any).key(undefined, { ctrl: true, name: 'b' });
+  assert.equal(app.view, 'jobs'); assert.ok(app.jobs.every(j => j.running));
+  app.selected = 0; (app as any).openSelected(); assert.equal(app.input, '');
+  (app as any).key(undefined, { ctrl: true, name: 'b' });
+  app.selected = 1; (app as any).openSelected(); assert.equal(app.input, 'Writer draft');
+  for (const width of [46, 80, 120]) assert.ok(app.render(width, 24, false).every(line => textWidth(line) <= width - 1));
 });
