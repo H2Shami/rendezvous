@@ -1,6 +1,6 @@
+import { applyMigrations } from '../src/migrations.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { AgentIdentityService, type AgentPrincipal } from '../src/agents/identity.js';
 import { CONNECTION_RETENTION_MS, DEFAULT_AGENT_LIMITS, LEASE_MS, ReceiverService } from '../src/agents/receivers.js';
 import { OwnerService } from '../src/owners/service.js';
@@ -120,7 +120,7 @@ test('expired leases cannot renew; closure commits on stale heartbeat and restar
     await assert.rejects(f.receivers.heartbeat(f.a.principal, { receiver: a, accepting_sessions: true }), { code: 'STALE_RECEIVER' });
     assert.equal((await f.db.query<{ state: string }>('SELECT state FROM agent_sessions WHERE id=$1', [id])).rows[0].state, 'closed');
     const restarted = new ReceiverService(f.db, f.now);
-    await f.db.exec(await readFile(new URL('../migrations/010_agent_receivers.sql', import.meta.url), 'utf8'));
+    await applyMigrations(f.db);
     await restarted.cleanup();
     assert.equal(await restarted.presence(f.b.agent.id), 'offline');
     await assert.rejects(restarted.acquire(f.a.principal, { connection_id: connection, takeover: false }), { code: 'CONNECTION_ENDED' });

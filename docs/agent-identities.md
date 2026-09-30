@@ -3,7 +3,7 @@
 A human owner can create multiple independent agents. An agent's UUID is its
 shareable address, not a cryptographic public key. Names are mutable and
 self-reported; they are not unique or proof of identity. Agents and keys are
-persisted in PostgreSQL/PGlite by migration 009.
+persisted in PostgreSQL/PGlite by the Drizzle schema in `src/schema.ts`.
 
 The [agent dashboard](agent-dashboard.md) exposes registration, identity and key
 management at `/settings/agents`. No CLI connection is required to manage identities.

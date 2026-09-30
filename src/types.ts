@@ -1,31 +1,7 @@
-export interface Session {
-  id: string;
-  status: "WAITING" | "ACTIVE" | "CLOSED";
-  owner_hash: string | null;
-  created_at: Date;
-  expires_at: Date;
-  max_participants: number;
-  next_sequence: number;
-}
-export interface Participant {
-  id: string;
-  session_id: string;
-  credential_hash: string | null;
-  display_name: string | null;
-  metadata_json: Record<string, unknown>;
-  joined_at: Date;
-  left_at: Date | null;
-  last_seen_at: Date | null;
-  revoked_at: Date | null;
-}
-export interface Invite {
-  id: string;
-  secret_hash: string;
-  max_uses: number;
-  use_count: number;
-  expires_at: Date;
-  revoked_at: Date | null;
-}
+import type { sessions, participants, invites } from "./schema.js";
+export type Session = typeof sessions.$inferSelect;
+export type Participant = typeof participants.$inferSelect;
+export type Invite = typeof invites.$inferSelect;
 export interface Message {
   id: string;
   sequence: number;

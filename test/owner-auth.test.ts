@@ -117,15 +117,12 @@ test('legacy provider routes are retired and stale attempts cannot authenticate 
   } finally { await f.stop(); }
 });
 
-test('migration removes earlier PR session storage, preserves owners and can be reapplied', async () => {
+test('Drizzle schema omits obsolete owner session storage and preserves owners on migration rerun', async () => {
   const f = await fixture(); const owners = new OwnerService(f.db, f.auth, f.now);
   const old = await owners.establish('https://github.com', uuid());
   try {
-    await f.db.exec('CREATE TABLE owner_sessions(id uuid PRIMARY KEY, owner_id uuid REFERENCES owners(id))');
-    await f.db.query('INSERT INTO owner_sessions VALUES($1,$2)', [uuid(), old.id]);
-    const { readFile } = await import('node:fs/promises');
-    const sql = await readFile(new URL('../migrations/008_workos_auth.sql', import.meta.url), 'utf8');
-    await f.db.exec(sql); await f.db.exec(sql);
+    const { applyMigrations } = await import('../src/migrations.js');
+    await applyMigrations(f.db); await applyMigrations(f.db);
     assert.equal((await f.db.query('SELECT id FROM owners WHERE id=$1', [old.id])).rows.length, 1);
     assert.equal((await f.db.query("SELECT table_name FROM information_schema.tables WHERE table_name='owner_sessions'")).rows.length, 0);
   } finally { await f.db.query('DELETE FROM owners WHERE id=$1', [old.id]); await f.stop(); }

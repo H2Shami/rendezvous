@@ -1,6 +1,6 @@
+import { applyMigrations } from '../src/migrations.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { AgentIdentityService, type IdentityInvalidation } from '../src/agents/identity.js';
 import { OwnerService } from '../src/owners/service.js';
 import { requireThat, secret, uuid } from '../src/validation.js';
@@ -67,8 +67,8 @@ test('multiple agents have stable identities, independent keys and no plaintext 
     assert.equal((await f.agents.update(f.a.id, a.id, { display_name: 'Renamed' })).id, a.id);
     const metadata = await f.agents.credentials(f.a.id, a.id, { limit: 100 });
     assert.doesNotMatch(JSON.stringify(metadata), /secret_hash|api_key|agk_/);
-    await f.db.exec(await readFile(new URL('../migrations/009_agent_identities.sql', import.meta.url), 'utf8'));
-    await f.db.exec(await readFile(new URL('../migrations/009_agent_identities.sql', import.meta.url), 'utf8'));
+    await applyMigrations(f.db);
+    await applyMigrations(f.db);
     assert.equal((await f.agents.authenticate(rotated.api_key)).agent_id, a.id);
     await assert.rejects(f.agents.authenticate(key.api_key), { code: 'UNAUTHORIZED' });
   } finally { await f.stop(); }

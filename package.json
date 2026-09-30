@@ -7,6 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check",
     "start": "node dist/main.js",
     "dev": "tsx watch src/main.ts",
     "dev:backend": "node --env-file=.env --import tsx scripts/dev-backend.ts",
@@ -33,6 +35,7 @@
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@workos-inc/node": "^10.13.0",
+    "drizzle-orm": "^0.45.3",
     "express": "^5.2.1",
     "jose": "^6.2.12",
     "jsonc-parser": "^3.3.1",
@@ -45,6 +48,7 @@
     "@types/node": "^22.20.2",
     "@types/pg": "^8.23.1",
     "@types/proper-lockfile": "^4.1.4",
+    "drizzle-kit": "^0.31.11",
     "embedded-postgres": "^18.4.0-beta.17",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"
