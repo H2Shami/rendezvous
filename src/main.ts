@@ -6,8 +6,10 @@ import { Service } from "./service.js";
 import { createApplication } from "./server.js";
 import { WorkOSProvider, ownerAuthConfig } from "./owners/provider.js";
 import lockfile from "proper-lockfile";
+import { storageConfig } from "./storage-config.js";
 
 async function main() {
+  const storage = storageConfig(process.env);
   const port = Number(process.env.PORT || 3000);
   const publicUrl = (
     process.env.NGROK_DOMAIN ||
@@ -28,9 +30,11 @@ async function main() {
     !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
   )
     throw new Error("Non-loopback PUBLIC_URL must use HTTPS.");
-  const dataDir = resolve(process.env.DATA_DIR || ".data");
-  await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  const release = await lockfile
+  const dataDir = storage.embeddedTest ? resolve(process.env.DATA_DIR!) : undefined;
+  let release: () => Promise<void> = async () => {};
+  if (dataDir) {
+    await mkdir(dataDir, { recursive: true, mode: 0o700 });
+    release = await lockfile
     .lock(dataDir, {
       lockfilePath: resolve(dataDir, "server.lock"),
       stale: 120000,
@@ -44,15 +48,16 @@ async function main() {
         );
       throw err;
     });
+  }
   let db: Database | undefined,
     app: ReturnType<typeof createApplication> | undefined;
   try {
-    const secrets = process.env.TOKEN_PEPPER
-      ? { pepper: process.env.TOKEN_PEPPER }
-      : await loadSecrets(resolve(dataDir, "server-secrets.json"));
+    const secrets = storage.pepper
+      ? { pepper: storage.pepper }
+      : await loadSecrets(resolve(dataDir!, "server-secrets.json"));
     db = await openDatabase({
-      databaseUrl: process.env.DATABASE_URL,
-      dataDir: resolve(dataDir, "postgres"),
+      databaseUrl: storage.databaseUrl,
+      ...(dataDir ? { dataDir: resolve(dataDir, "postgres") } : {}),
     });
     const numeric = (name: string, fallback: number) => {
       const value = Number(process.env[name] ?? fallback);

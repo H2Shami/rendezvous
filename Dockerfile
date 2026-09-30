@@ -7,10 +7,9 @@ RUN node --input-type=module -e "import { writeFile } from 'node:fs/promises'; c
 RUN npm run build && npm prune --omit=dev
 
 FROM node:24-bookworm-slim
-ENV NODE_ENV=production HOST=0.0.0.0 DATA_DIR=/data
+ENV NODE_ENV=production HOST=0.0.0.0
 WORKDIR /app
 COPY --from=build --chown=node:node /app /app
-RUN mkdir /data && chown node:node /data
 USER node
 EXPOSE 3000
 CMD ["node", "dist/main.js"]

@@ -1,5 +1,16 @@
 # HTTP V1 verification
 
+## Current local testing policy
+
+Run the application against Docker PostgreSQL 17 for all local manual, dashboard,
+and real-agent testing. Set `DATABASE_URL` in `.env` and start the database with
+`npm run data:up`; see [local setup](../README.md#storage-and-deployment).
+Do not clear `DATABASE_URL` or run a PGlite database from `DATA_DIR`. That does not
+exercise the native PostgreSQL connection path used in hosted dev/prod.
+Application runs no longer use `DATA_DIR`; supply `TOKEN_PEPPER` through the environment. Existing PGlite
+automated fixtures remain useful in isolation, but are not deployment-parity
+verification; run native PostgreSQL coverage as well.
+
 Historical verification notes below predate the Drizzle baseline. The old
 signed-message data-upgrade tests have been replaced by fresh-schema, apply-once,
 rollback, and non-destructive legacy-rejection tests; see [migrations](migrations.md).

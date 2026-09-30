@@ -12,7 +12,7 @@ test('duplicate startup refuses storage before opening PostgreSQL and clean rest
   const dir = await mkdtemp(join(tmpdir(), 'rendezvous-startup-'));
   const base = `http://127.0.0.1:${port}`;
   function start() {
-    const child = spawn(process.execPath, ['dist/main.js'], { env: { ...process.env, DATABASE_URL: '', DATA_DIR: dir, PORT: String(port), HOST: '127.0.0.1', PUBLIC_URL: base }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['dist/main.js'], { env: { ...process.env, NODE_ENV: 'test', DATABASE_URL: '', DATA_DIR: dir, PORT: String(port), HOST: '127.0.0.1', PUBLIC_URL: base }, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     const done = new Promise<{ code: number | null; output: string }>((resolve, reject) => { child.once('error', reject); child.once('exit', code => resolve({ code, output })); });
     const ready = new Promise<void>((resolve, reject) => {

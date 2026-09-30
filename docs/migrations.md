@@ -3,6 +3,10 @@
 `src/schema.ts` is the source of truth for all 16 PostgreSQL tables, indexes,
 foreign keys, and checks. Row types are inferred from that schema. Both native
 PostgreSQL (`pg`) and embedded PGlite use Drizzle query builders.
+Local application testing must use PostgreSQL 17 in Docker with `DATABASE_URL`
+configured, matching the native PostgreSQL path used by hosted dev/prod.
+PGlite is allowed only in isolated automated test fixtures, not as a `DATA_DIR`
+database for development servers or manual/agent testing.
 
 ## Changing the schema
 
@@ -34,8 +38,8 @@ explanation **before altering it**. There is no automatic drop, reset, or adopti
   For disposable AWS dev data, alternatively follow the explicit
   [Pulumi pause/reset/resume procedure](../infra/RESET-DEV-DB.md) to reuse the
   existing database. Never reset a database while the application is running.
-- PGlite: set `DATA_DIR` to a new private directory, for example
-  `.data/drizzle-dev`. Keep the original directory if you want a backup.
+- Local development: create a fresh database in Docker PostgreSQL and point
+  `DATABASE_URL` to it. Do not use a new `DATA_DIR` to bypass the legacy-schema check.
 - Existing rooms, identities, keys, and receiver leases are not copied. Create new
   agents/credentials and rooms after switching. Reconfigure local listeners.
 

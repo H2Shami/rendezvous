@@ -16,7 +16,7 @@ test('backend command starts the relay with readable logs and shuts it down', as
   const port = await freePort();
   const child = spawn(process.execPath, ['--import', 'tsx', 'scripts/dev-backend.ts'], { env: { ...process.env,
     PORT: String(port), PUBLIC_URL: `http://127.0.0.1:${port}`, DATA_DIR: dir,
-    DATABASE_URL: '',
+    DATABASE_URL: '', NODE_ENV: 'test',
   }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
   const exited = once(child, 'exit');
