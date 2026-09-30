@@ -4,6 +4,11 @@ import * as pulumi from '@pulumi/pulumi';
 import * as random from '@pulumi/random';
 
 const config = new pulumi.Config();
+// Explicit maintenance switch; never clear database data during pulumi up.
+const devServicePaused = config.getBoolean('devServicePaused') ?? false;
+if (devServicePaused && pulumi.getStack() !== 'dev') {
+  throw new Error('devServicePaused may only be enabled on the dev stack');
+}
 const domain = config.require('domain');
 const ownerAuthEnabled = config.getBoolean('enableOwnerAuth') ?? false;
 const workosClientId = ownerAuthEnabled ? config.require('workosClientId') : undefined;
@@ -227,7 +232,7 @@ const task = new aws.ecs.TaskDefinition('task', {
 const service = new aws.ecs.Service('service', {
   // One relay: room wakeups are process-local. Receiver fencing is in PostgreSQL;
   // receiver inboxes also recheck the DB at most every second across notification scopes.
-  cluster: cluster.arn, taskDefinition: task.arn, desiredCount: 1, launchType: 'FARGATE', platformVersion: '1.4.0',
+  cluster: cluster.arn, taskDefinition: task.arn, desiredCount: devServicePaused ? 0 : 1, launchType: 'FARGATE', platformVersion: '1.4.0',
   // Stop the old relay before starting another: notifications are process-local.
   deploymentMinimumHealthyPercent: 0, deploymentMaximumPercent: 100,
   deploymentCircuitBreaker: { enable: true, rollback: true },

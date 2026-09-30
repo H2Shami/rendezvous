@@ -31,6 +31,9 @@ The historical handwritten migration chain has been replaced by
 explanation **before altering it**. There is no automatic drop, reset, or adoption.
 
 - PostgreSQL: create a new empty database and set `DATABASE_URL` to it.
+  For disposable AWS dev data, alternatively follow the explicit
+  [Pulumi pause/reset/resume procedure](../infra/RESET-DEV-DB.md) to reuse the
+  existing database. Never reset a database while the application is running.
 - PGlite: set `DATA_DIR` to a new private directory, for example
   `.data/drizzle-dev`. Keep the original directory if you want a backup.
 - Existing rooms, identities, keys, and receiver leases are not copied. Create new
