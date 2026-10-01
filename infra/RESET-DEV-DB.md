@@ -1,122 +1,74 @@
-# Reset dev for the Drizzle baseline
+# Recreate the dev database
 
-This is an **intentional, destructive dev-only reset without a new backup**.
-It removes all app data (owners, rooms, agents, credentials, messages and leases)
-and migration history. Existing automated RDS backups are not removed. Production
-is not part of this procedure. RDS, its password, `TOKEN_PEPPER`, networking and
-`DATABASE_URL` stay unchanged.
-
-Pulumi controls the service lifecycle; an explicit SQL command resets the schemas.
-No reset runs automatically during `pulumi up`. Use the Drizzle PR checkout for
-both deployments below. Do not resume the old application after clearing data.
-
-## 1. Pause dev through Pulumi
-
-From the repository root, with Docker running and AWS/Pulumi authenticated:
+Open the private dev tunnel in one terminal, then run the reset in another (both
+from the repository root):
 
 ```sh
-cd infra
-npm ci
-npm run check
-pulumi config set devServicePaused true --stack dev
-pulumi preview --stack dev
-pulumi up --stack dev
-```
-
-Inspect the preview before approving: the ECS service must change to zero tasks;
-there must be no RDS replacement/deletion or unrelated infrastructure changes.
-Pulumi builds the new images here but leaves the service stopped. The maintenance
-setting defaults to false and is rejected on any stack other than `dev`.
-
-Confirm desired, running and pending counts are **all zero** before continuing:
-
-```sh
-aws --profile "$(pulumi config get aws:profile --stack dev)" \
-  --region "$(pulumi config get aws:region --stack dev)" ecs describe-services \
-  --cluster "$(pulumi stack output clusterName --stack dev)" \
-  --services "$(pulumi stack output serviceName --stack dev)" \
-  --query 'services[].{desired:desiredCount,running:runningCount,pending:pendingCount}'
-```
-
-Also stop any local backend/listener connected to the remote dev database. Keep
-the service paused if any subsequent step fails; do not resume automatically.
-
-## 2. Open the private dev tunnel
-
-In a second terminal, from the repository root:
-
-```sh
+# Terminal 1: leave running
 PULUMI_STACK=dev npm --prefix infra run db:tunnel
+
+# Terminal 2: one command handles pause → recreate → resume
+npm --prefix infra run db:reset:dev
 ```
 
-Keep this terminal open. Use the default local port 15432. If that port is already
-occupied, stop and identify the listener rather than reusing an unknown tunnel.
-See [database access](DB-ACCESS.md) for prerequisites and password access.
+This **permanently deletes and recreates the dev `rendezvous` database**, without
+taking a new backup. Production, the RDS instance, credentials, networking and
+existing automated backups are untouched. Old rooms, agent keys and links stop
+working. This is an explicit operator command, never a normal `pulumi up` action.
 
-## 3. Connect, inspect, then reset explicitly
+## Prerequisites
 
-In the first terminal (still in `infra/`):
+- Use the Drizzle checkout with a reviewed infra diff. Install project/infra
+  dependencies, Docker, Pulumi, AWS CLI, Session Manager plugin and `psql`.
+  Authenticate AWS and Pulumi; Docker must be running for image builds.
+- The dev stack must already have its database tunnel enabled. The helper always
+  selects stack `dev` and checks the actual RDS endpoint and AWS
+  `Project=rendezvous`, `Stack=dev` tags. It accepts no target arguments.
+- Close other clients connected to the hosted dev database. Use tunnel port 15432
+  or the same `DB_LOCAL_PORT` override in both terminals. See [DB access](DB-ACCESS.md).
+- Have the dev database password ready. Enter it in the `psql` password prompt,
+  not a command or shell history. There are two prompts: a read-only connection
+  preflight before pausing ECS, and the actual reset after ECS stops.
+
+## What happens
+
+1. Verify the dev RDS identity and tunnel connection with full TLS hostname checks.
+2. Display the exact RDS hostname and require typing `delete dev rendezvous`.
+3. Set `devServicePaused=true` and run `pulumi up --stack dev`. Review and approve
+   the plan: ECS goes to zero tasks; no RDS replacement or unrelated changes.
+4. Verify ECS desired/running/pending counts are zero and recheck RDS identity.
+5. Connect to the maintenance database `postgres` and run `DROP DATABASE IF EXISTS
+   rendezvous`, followed by `CREATE DATABASE rendezvous OWNER rendezvous TEMPLATE
+   template0`. No forced disconnections: active database clients cause failure.
+6. Set `devServicePaused=false` and run Pulumi again. Approve this second plan;
+   the Drizzle backend starts and creates the new tables automatically.
+7. Check `/health`. Sign in, create new agent credentials and a room, then test
+   joining, sending, long polling and reconnecting.
+
+Close the tunnel with Ctrl+C when done. When nobody else needs the bridge:
 
 ```sh
-curl --fail --location https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
-  --output /tmp/rendezvous-rds-ca.pem
-pulumi stack output databaseHost --stack dev
-psql "host=$(pulumi stack output databaseHost --stack dev) hostaddr=127.0.0.1 port=15432 dbname=rendezvous user=rendezvous sslmode=verify-full sslrootcert=/tmp/rendezvous-rds-ca.pem" \
-  -X -W -v ON_ERROR_STOP=1
+npm --prefix infra run db:tunnel:stop
 ```
 
-Enter the **dev** database password at the prompt (do not put it in shell history).
-The connection verifies TLS against the dev RDS hostname, not localhost. Inside
-psql, inspect before running the destructive block:
+## If it fails
 
-```sql
-\conninfo
-SELECT current_database(), current_user;
-SELECT pid, usename, application_name, state
-FROM pg_stat_activity
-WHERE datname = current_database() AND pid <> pg_backend_pid();
-```
+The command stops immediately; it never resumes after a failed drop/create.
+Drop and create are separate operations, **not an atomic transaction**. A create
+failure can leave the database absent. Fix the reported error and rerun the reset
+command only if you still intend to discard all dev data. `IF EXISTS` permits
+recovery from an absent database. Interrupting a reset also requires checking
+the database and ECS state before continuing.
 
-Confirm the hostname matches the dev output, the database/user are `rendezvous`,
-and no application connections remain. Close other clients first. Then run:
-
-```sql
-BEGIN;
-SET LOCAL lock_timeout = '5s';
-DROP SCHEMA IF EXISTS drizzle CASCADE;
-DROP SCHEMA public CASCADE;
-CREATE SCHEMA public AUTHORIZATION rendezvous;
-COMMIT;
-\q
-```
-
-This permanently removes the application schemas and data, including both legacy
-and Drizzle migration ledgers. It does not drop the database or RDS instance. If
-SQL fails, exit psql (or `ROLLBACK`) and resolve the problem while dev stays paused.
-The transaction prevents a partially committed schema reset.
-
-## 4. Resume the Drizzle application through Pulumi
-
-From `infra/`, using the same Drizzle checkout:
+If failure occurs during resume or health verification, the service may already
+be running. To pause it again, from `infra/`:
 
 ```sh
-pulumi config set devServicePaused false --stack dev
-pulumi preview --stack dev
+pulumi config set devServicePaused true --stack dev
 pulumi up --stack dev
-curl --fail "$(pulumi stack output url --stack dev)/health"
 ```
 
-Pulumi restores one task. Backend startup applies `drizzle/0000_initial.sql` before
-the frontend becomes healthy. Log in again, create a room and new agent credentials,
-then verify join, send, long polling and listener reconnect. Old keys and links
-will no longer work. A healthy `/health` alone is not a full functional check.
-
-After closing the tunnel with Ctrl+C, from the repository root:
-
-```sh
-PULUMI_STACK=dev npm --prefix infra run db:tunnel:stop
-```
-
-Do not commit a temporary `devServicePaused: true` stack setting. If rollout fails,
-pause dev again and inspect backend logs using the stack's `logGroupName` output.
-There is no data rollback in this procedure; fix forward on the Drizzle version.
+For an application-only failure after successful recreation, fix forward on the
+Drizzle version, then set `devServicePaused=false` and run Pulumi again; do not
+reset a second time unnecessarily. Do not commit a temporary paused stack setting.
+There is no data rollback in this no-backup workflow. Never resume the legacy app.

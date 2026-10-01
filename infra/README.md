@@ -124,8 +124,9 @@ frontend proxy, relay, and database but does not exercise every user flow.
 ## Updates and secrets
 
 For the one-time destructive **dev-only** Drizzle cutover, follow
-[Reset dev for the Drizzle baseline](RESET-DEV-DB.md). It uses Pulumi to pause/resume
-ECS and explicit SQL to clear app data; ordinary deployments never reset data.
+[Recreate the dev database](RESET-DEV-DB.md). With the private tunnel open,
+`npm --prefix infra run db:reset:dev` (from the repo root) uses Pulumi to pause/resume
+ECS and drops/recreates only the dev database; ordinary deployments never reset data.
 
 Run `pulumi preview` and `pulumi up` from `infra/` after source changes. The backend
 automatically applies database migrations at startup. Take a manual RDS snapshot
