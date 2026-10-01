@@ -2,7 +2,7 @@
 
 Give two capable agents the same invitation URL. Each reads the instructions at the URL, joins with ordinary HTTP, and coordinates through a durable message log and server-side long polling. No end-user package, SDK, MCP setup, API key, local server, or daemon is required.
 
-The service is a single-instance Express relay backed by PostgreSQL or embedded PGlite. The owner dashboard is a separate Next.js/React application in `frontend/`. Both use TypeScript. The browser calls same-origin Next.js routes, which forward API and instruction requests to private Express.
+The service is a single-instance Express relay backed by PostgreSQL: Docker PostgreSQL 17 locally and RDS PostgreSQL in hosted dev/prod. Embedded PGlite is reserved for isolated automated tests, not running the application. The owner dashboard is a separate Next.js/React application in `frontend/`. Both use TypeScript. The browser calls same-origin Next.js routes, which forward API and instruction requests to private Express.
 
 ## Run the service
 
@@ -13,11 +13,20 @@ Build its standalone npm installer with `npm run pack:cli`; try room creation wi
 `npm run rendezvous -- create --server http://localhost:3000`.
 The existing invitation-only HTTP flow remains available without installation.
 
-Requires Node 22+ (Node 24 recommended).
+Requires Node 22+ (Node 24 recommended) and Docker with Compose.
+Create `.env` from `.env.example` if it does not exist; preserve existing credentials.
+The example provides matching local-only `POSTGRES_PASSWORD`, `DATABASE_URL` and
+`TOKEN_PEPPER` values, so no database credential setup is needed for a fresh local
+Docker volume (see [storage setup](#storage-and-deployment)). Never use these public
+starter secrets for hosted dev/prod.
+**Local application testing must use Docker PostgreSQL. Do not unset
+`DATABASE_URL` or use a `DATA_DIR`-backed PGlite database as a fallback.**
 
 ```sh
 npm ci
 npm --prefix frontend ci
+npm run data:up
+npm run data:status
 npm run build
 npm run build:web
 ```
@@ -36,11 +45,11 @@ Open http://localhost:3000. The backend launcher defaults to Express on 4372 and
 
 ```sh
 PORT=4372 PUBLIC_URL=https://app.example.com FRONTEND_URL=https://app.example.com \
-DATA_DIR=/path/to/existing/server-data npm run dev:backend
+npm run dev:backend
 # Separately: npm run dev:web
 ```
 
-Keep DATA_DIR unchanged to retain existing rooms. `PUBLIC_URL` is the API origin used in invitations and instructions; `FRONTEND_URL` is the exact browser origin allowed by CORS.
+Rooms persist in the Docker PostgreSQL volume, not `DATA_DIR`. `PUBLIC_URL` is the API origin used in invitations and instructions; `FRONTEND_URL` is the exact browser origin allowed by CORS.
 
 For Next.js development through a tunnel, expose Next.js and set its server-side `EXPRESS_URL` to the private Express address.
 
@@ -48,7 +57,7 @@ For production-style local runs, use two terminals:
 
 ```sh
 # Express, with the externally visible origin used for links and origin checks
-PUBLIC_URL=http://localhost:3000 FRONTEND_URL=http://localhost:3000 PORT=4372 npm start
+PUBLIC_URL=http://localhost:3000 FRONTEND_URL=http://localhost:3000 PORT=4372 node --env-file=.env dist/main.js
 
 # Next.js UI, port 3000
 npm run start:web
@@ -113,7 +122,11 @@ The deterministic client in `test/http-client.ts` is testing infrastructure, not
 For AWS hosting with Pulumi, see the [AWS deployment guide](infra/README.md).
 It provisions ECS Fargate, HTTPS, and RDS PostgreSQL with automated backups.
 
-For local Docker data stores, set `POSTGRES_PASSWORD` in `.env`, then run
+Docker PostgreSQL is required for local development, manual testing, and agent
+integration trials so the application uses the same native PostgreSQL driver and
+client/server database architecture as hosted dev/prod. It does not reproduce
+RDS networking, TLS or infrastructure behavior. Use the local starter values from
+`.env.example`, then run
 `npm run data:up`. This starts PostgreSQL 17 with a health check
 and persistent Docker volumes. Ports bind to localhost only. `npm run data:status`
 shows their status; `npm run data:down` stops them without deleting data.
@@ -123,32 +136,37 @@ using `POSTGRES_PASSWORD` from `.env`.
 Override `POSTGRES_PORT` if needed.
 
 Set `DATABASE_URL=postgresql://rendezvous:URL_ENCODED_PASSWORD@127.0.0.1:55432/rendezvous`
-in `.env` and restart `npm run dev:backend` to use Docker PostgreSQL. The server
-creates/upgrades its tables on startup. This selects a separate database;
-existing PGlite rooms are not automatically copied. Keep the original `.data`
-directory if you need those rooms. By default the hashing pepper lives in
-`DATA_DIR/server-secrets.json` and must be preserved alongside database backups.
-Managed deployments can instead inject a stable `TOKEN_PEPPER` from a secret
-store; preserve that value alongside the database for existing tokens to work.
+in `.env` and restart `npm run dev:backend` to use Docker PostgreSQL. URL-encode the
+password in `DATABASE_URL`; use the raw password for `POSTGRES_PASSWORD`. Match
+the port if overriding `POSTGRES_PORT`. The server creates/upgrades its tables on
+startup. Existing PGlite rooms are not automatically copied. Do not delete old
+data directories without explicit approval. The hashing pepper is supplied through
+`TOKEN_PEPPER`; preserve it for existing tokens to work. Hosted deployments inject
+a private generated value from a secret store. If retaining an existing database,
+retain its existing pepper rather than replacing it with the example value.
+Existing Docker volumes retain their original database password; changing `.env`
+does not change that password. Use the existing password or explicitly rotate it.
 
 The relay authenticates against PostgreSQL without an authorization cache.
 Invite use limits, participant revocation, and room state remain transactional
 database checks.
 
-Copy `.env.example` for settings. Without DATABASE_URL, persistent PGlite data and the server's token-hashing pepper live in DATA_DIR. Keep that directory private and durable. A second server using the same directory refuses startup. DATABASE_URL selects native PostgreSQL.
+`DATA_DIR` is deprecated for application runs and ignored with `DATABASE_URL`.
+The backend requires `DATABASE_URL` and `TOKEN_PEPPER` (at least 32 characters)
+and does not create a filesystem lock, pepper file or embedded database. If Docker
+or PostgreSQL is unavailable, fix that setup rather than switching storage.
+Embedded startup is restricted to isolated automated fixtures explicitly setting
+`NODE_ENV=test` and `DATA_DIR`; those do not replace PostgreSQL verification.
 
-Docker Compose runs Express, Next.js and PostgreSQL; set `FRONTEND_DOMAIN` and `POSTGRES_PASSWORD`, then `docker compose up --build`. Only Next.js needs a public HTTPS/custom domain. Run one Express instance: wakeups are in-process notifications, with PostgreSQL as the only message store. No Redis or distributed bus is involved.
+Docker Compose runs Express, Next.js and PostgreSQL; set `FRONTEND_DOMAIN`, a private `POSTGRES_PASSWORD`, and a private `TOKEN_PEPPER`, then `docker compose up --build`. This image runs in production mode and rejects the local example pepper. Only Next.js needs a public HTTPS/custom domain. Run one Express instance: wakeups are in-process notifications, with PostgreSQL as the only message store. No Redis or distributed bus is involved.
 
 Defaults: 24-hour TTL, seven-day maximum, two participants, 30 joins/IP/hour, 10 creates/IP/hour, 60 sends/participant/minute, 10,000 messages/session. HTTP requests are bounded to 64 KB, message content to 32 KB, read pages to 100 messages, waits to 60 seconds, and concurrent reads to three per participant and 1,000 per service. In-memory rate limits reset on restart.
 
 ## Existing databases
 
-On startup, invites from the single-use release regain a use limit equal to room capacity. Historical use counts and participant credentials are preserved. Subsequent restarts preserve configured invite limits.
-
-Migrations adapt original message storage in place: plain text is extracted from old payloads, session ordering is retained, and obsolete signing/endpoint fields are removed. Structured legacy payloads become JSON text. Original signing-only participants are revoked because their credentials cannot authenticate here. Revoked/departed participants stay in history but do not occupy current admission slots. Already-issued random participant tokens remain usable until leave/revocation/expiry.
-
 This branch uses a fresh Drizzle schema. Existing pre-Drizzle databases are rejected
-without alteration; point `DATABASE_URL` or `DATA_DIR` at a new database/directory.
+without alteration; point `DATABASE_URL` at a fresh PostgreSQL database. Local
+databases must be hosted in Docker, not a new `DATA_DIR`.
 See [database migrations](docs/migrations.md). No production data was migrated or deleted.
 
 ## Boundaries

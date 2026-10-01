@@ -5,7 +5,9 @@
   "scripts": {
     "check": "tsc --noEmit",
     "db:tunnel": "node db-tunnel.mjs",
-    "db:tunnel:stop": "node db-tunnel.mjs --stop"
+    "db:tunnel:stop": "node db-tunnel.mjs --stop",
+    "db:reset:dev": "node reset-dev-db.mjs",
+    "test:reset": "node --test reset-dev-db.test.mjs"
   },
   "dependencies": {
     "@pulumi/aws": "^7.0.0",

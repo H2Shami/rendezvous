@@ -16,11 +16,10 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql://rendezvous:${POSTGRES_PASSWORD}@db:5432/rendezvous
+      TOKEN_PEPPER: ${TOKEN_PEPPER:?Set a private random token pepper for this production-mode image}
       PUBLIC_URL: https://${FRONTEND_DOMAIN:?Set your frontend domain}
       FRONTEND_URL: https://${FRONTEND_DOMAIN}
       TRUST_PROXY: uniquelocal
-    volumes:
-      - secrets:/data
     depends_on:
       db:
         condition: service_healthy
@@ -34,4 +33,3 @@ services:
     restart: unless-stopped
 volumes:
   postgres:
-  secrets:
