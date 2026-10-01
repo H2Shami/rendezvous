@@ -147,7 +147,9 @@ On startup, invites from the single-use release regain a use limit equal to room
 
 Migrations adapt original message storage in place: plain text is extracted from old payloads, session ordering is retained, and obsolete signing/endpoint fields are removed. Structured legacy payloads become JSON text. Original signing-only participants are revoked because their credentials cannot authenticate here. Revoked/departed participants stay in history but do not occupy current admission slots. Already-issued random participant tokens remain usable until leave/revocation/expiry.
 
-Back up an existing deployment before upgrade. No migration was run against your production data during development.
+This branch uses a fresh Drizzle schema. Existing pre-Drizzle databases are rejected
+without alteration; point `DATABASE_URL` or `DATA_DIR` at a new database/directory.
+See [database migrations](docs/migrations.md). No production data was migrated or deleted.
 
 ## Boundaries
 

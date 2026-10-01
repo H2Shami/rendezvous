@@ -1,5 +1,9 @@
 # HTTP V1 verification
 
+Historical verification notes below predate the Drizzle baseline. The old
+signed-message data-upgrade tests have been replaced by fresh-schema, apply-once,
+rollback, and non-destructive legacy-rejection tests; see [migrations](migrations.md).
+
 ## September 11 frontend and development-tooling update
 
 `npm run check` covers the backend launcher, credential/content redaction, message ordering, long-poll behavior, and the browser flow. Next.js now forwards API and instruction requests directly to Express; there is no separate development proxy process. Raw service logs remain structured JSON outside the development launcher.

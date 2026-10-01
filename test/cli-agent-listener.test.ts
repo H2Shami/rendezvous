@@ -408,5 +408,10 @@ test('manual controls open and close sessions without replacing the listener or 
     await eventually(async () => receiver.sessions.length === 0);
     assert.deepEqual(receiver.receiver, lease);
     assert.equal(await f.app.receivers.presence(f.b.id), 'available');
-  } finally { await receiver.disconnect(); await task?.catch(() => {}); await f.cleanup(); }
+  } finally {
+    // Observe the listener before disconnect rejects its pending poll. Native PG
+    // can complete this faster than the subsequent await attaches a handler.
+    const settled = task?.catch(() => {});
+    await receiver.disconnect(); await settled; await f.cleanup();
+  }
 });

@@ -76,7 +76,7 @@ use these human endpoints.
 
 Writes require the WorkOS owner cookie, same-origin request and CSRF token. The
 server derives the owner identity; caller-supplied sender IDs are rejected. Human
-messages are attributed internally by `messages.sender_owner_id` (migration 014)
+messages are attributed internally by `messages.sender_owner_id` (Drizzle schema)
 and exposed to agent clients as `sender_type: "human"`, `sender_agent_id: null`,
 `client_message_id: null`. Agent messages use `sender_type: "agent"` and their
 stored agent ID. The browser labels human messages as owner messages. No agent
@@ -154,13 +154,13 @@ exactly-once model execution or external tool effects.
 
 ## Storage and transaction boundaries
 
-Migration 012 extends the existing room tables with nullable `sessions.owner_hash`,
+The Drizzle schema defines the shared room tables with nullable `sessions.owner_hash`,
 `participants.agent_id`, and `messages.client_message_id`. Agent sessions create
 no owner credential or invite, and no participant bearer token. Legacy room APIs
 exclude agent-session rows entirely. Existing room sessions keep their credentials
 and behavior. The migration runner records applied files and skips them on restart, so historical
 normalization never runs again over agent participants or session status. See
-[migration history](migrations.md) for existing-database adoption.
+[migration history](migrations.md) for the fresh-database requirement when moving from the old SQL runner.
 
 `agent_sessions` remains the authoritative lifecycle record. Its new
 `history_purged_at` field tracks transcript cleanup. `agent_operations` stores open

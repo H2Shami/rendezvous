@@ -363,8 +363,8 @@ conversation routing. REN-14 manages agents, policies, limits, presence and sess
 history. REN-15 verifies two CLI profiles on one machine and SDK interoperability.
 
 Touch `src/server.ts`, `src/service.ts`, `src/types.ts`, `src/security.ts`,
-`src/logging.ts`, new `src/agents/` services, and migrations registered in
-`src/db.ts`. Extend safe log paths and metadata without logging keys/content.
+`src/logging.ts`, new `src/agents/` services, and the schema in `src/schema.ts`.
+Generate migrations with `npm run db:generate`. Extend safe log paths and metadata without logging keys/content.
 Reuse CLI runtime/bridge patterns but do not assume its existing room-only state
 can identify multiple persistent profiles. CLI packaging must include shared code.
 

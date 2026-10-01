@@ -1,5 +1,21 @@
 import { SessionEngine } from "./session-engine.js";
-import { one, type Database, type Queryable } from "./db.js";
+import { type Database, type Queryable } from "./db.js";
+import {
+  and,
+  eq,
+  isNull,
+  lt,
+  notExists,
+  sql,
+  count as rowCount,
+} from "drizzle-orm";
+import {
+  sessions,
+  agentSessions,
+  participants,
+  invites,
+  securityEvents,
+} from "./schema.js";
 import {
   exactFields,
   integer,
@@ -10,13 +26,7 @@ import {
 } from "./validation.js";
 import { RateLimiter, type Security } from "./security.js";
 import { requestContext } from "./logging.js";
-import type {
-  Session,
-  Participant,
-  Invite,
-  Message,
-  MessagePage,
-} from "./types.js";
+import type { Session, Participant, MessagePage } from "./types.js";
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -48,7 +58,9 @@ export class Service {
   metrics: Record<string, number> = {};
   logger;
   readonly engine: SessionEngine;
-  get waiters() { return this.engine.waiters; }
+  get waiters() {
+    return this.engine.waiters;
+  }
 
   constructor(
     public db: Database,
@@ -89,10 +101,13 @@ export class Service {
     sessionId: string,
     participantId?: string,
   ) {
-    await db.query(
-      "INSERT INTO security_events(event,session_id,participant_id) VALUES($1,$2,$3)",
-      [event, sessionId, participantId || null],
-    );
+    await db.orm
+      .insert(securityEvents)
+      .values({
+        event,
+        session_id: sessionId,
+        participant_id: participantId ?? null,
+      });
   }
   log(event: string, fields: Record<string, unknown> = {}) {
     this.metrics[event] = (this.metrics[event] || 0) + 1;
@@ -120,11 +135,21 @@ export class Service {
       "Rendezvous not found.",
       404,
     );
-    const s = await one<Session>(
-      db,
-      `SELECT * FROM sessions WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM agent_sessions a WHERE a.id=sessions.id)${lock ? " FOR UPDATE" : ""}`,
-      [id],
-    );
+    const query = db.orm
+      .select()
+      .from(sessions)
+      .where(
+        and(
+          eq(sessions.id, id),
+          notExists(
+            db.orm
+              .select({ id: agentSessions.id })
+              .from(agentSessions)
+              .where(eq(agentSessions.id, sessions.id)),
+          ),
+        ),
+      );
+    const [s] = await (lock ? query.for("update") : query);
     requireThat(s, "NOT_FOUND", "Rendezvous not found.", 404);
     requireThat(
       allowExpired || this.status(s) !== "expired",
@@ -160,11 +185,15 @@ export class Service {
     allowExpired = false,
   ) {
     const s = await this.session(db, id, lock, allowExpired);
-    const p = await one<Participant>(
-      db,
-      "SELECT * FROM participants WHERE session_id=$1 AND credential_hash=$2",
-      [id, this.auth.digest(token)],
-    );
+    const [p] = await db.orm
+      .select()
+      .from(participants)
+      .where(
+        and(
+          eq(participants.session_id, id),
+          eq(participants.credential_hash, this.auth.digest(token)),
+        ),
+      );
     requireThat(
       p && !p.revoked_at && !p.left_at,
       "UNAUTHORIZED",
@@ -188,7 +217,12 @@ export class Service {
     exactFields(body, ["ttl_seconds", "max_participants", "invite_max_uses"]);
     this.limit(`create:${ip}`, this.config.sessionsPerHour, 3600000);
     const max = integer(body.max_participants ?? 2, 1, 10, "max_participants");
-    const uses = integer(body.invite_max_uses ?? max, 1, max, "invite_max_uses");
+    const uses = integer(
+      body.invite_max_uses ?? max,
+      1,
+      max,
+      "invite_max_uses",
+    );
     const ttl = integer(
       body.ttl_seconds ?? this.config.ttlSeconds,
       1,
@@ -201,14 +235,23 @@ export class Service {
       inviteId = uuid();
     const expires = new Date(this.clock() + ttl * 1000);
     await this.db.transaction(async (tx) => {
-      await tx.query(
-        "INSERT INTO sessions(id,owner_hash,expires_at,max_participants) VALUES($1,$2,$3,$4)",
-        [id, this.auth.digest(owner), expires, max],
-      );
-      await tx.query(
-        "INSERT INTO invites(id,session_id,secret_hash,max_uses,expires_at) VALUES($1,$2,$3,$4,$5)",
-        [inviteId, id, this.auth.digest(invite), uses, expires],
-      );
+      await tx.orm
+        .insert(sessions)
+        .values({
+          id,
+          owner_hash: this.auth.digest(owner),
+          expires_at: expires,
+          max_participants: max,
+        });
+      await tx.orm
+        .insert(invites)
+        .values({
+          id: inviteId,
+          session_id: id,
+          secret_hash: this.auth.digest(invite),
+          max_uses: uses,
+          expires_at: expires,
+        });
       await this.event(tx, "session.created", id);
     });
     this.log("session.created", { session_id: id });
@@ -221,10 +264,22 @@ export class Service {
     };
   }
   private async membershipStatus(tx: Queryable, id: string) {
-    await tx.query(
-      "UPDATE sessions SET status=CASE WHEN (SELECT count(*) FROM participants WHERE session_id=$1 AND revoked_at IS NULL AND left_at IS NULL)>=LEAST(max_participants,2) THEN 'ACTIVE' ELSE 'WAITING' END WHERE id=$1 AND status<>'CLOSED'",
-      [id],
-    );
+    const active = tx.orm
+      .select({ count: rowCount() })
+      .from(participants)
+      .where(
+        and(
+          eq(participants.session_id, id),
+          isNull(participants.revoked_at),
+          isNull(participants.left_at),
+        ),
+      );
+    await tx.orm
+      .update(sessions)
+      .set({
+        status: sql`CASE WHEN (${active}) >= LEAST(${sessions.max_participants},2) THEN 'ACTIVE' ELSE 'WAITING' END`,
+      })
+      .where(and(eq(sessions.id, id), sql`${sessions.status} <> 'CLOSED'`));
   }
   async join(id: string, body: unknown, ip: string) {
     exactFields(body, ["invite_token", "display_name", "metadata"]);
@@ -248,11 +303,18 @@ export class Service {
     const result = await this.db.transaction(async (tx) => {
       const s = await this.session(tx, id, true);
       this.writable(s);
-      const invite = await one<Invite>(
-        tx,
-        "SELECT * FROM invites WHERE session_id=$1 AND secret_hash=$2",
-        [id, this.auth.digest(body.invite_token as string)],
-      );
+      const [invite] = await tx.orm
+        .select()
+        .from(invites)
+        .where(
+          and(
+            eq(invites.session_id, id),
+            eq(
+              invites.secret_hash,
+              this.auth.digest(body.invite_token as string),
+            ),
+          ),
+        );
       requireThat(
         invite &&
           !invite.revoked_at &&
@@ -267,32 +329,37 @@ export class Service {
         "Invite has no uses left.",
         403,
       );
-      const count = await one<{ count: number }>(
-        tx,
-        "SELECT count(*)::integer AS count FROM participants WHERE session_id=$1 AND left_at IS NULL AND revoked_at IS NULL",
-        [id],
-      );
+      const [count] = await tx.orm
+        .select({ count: rowCount() })
+        .from(participants)
+        .where(
+          and(
+            eq(participants.session_id, id),
+            isNull(participants.left_at),
+            isNull(participants.revoked_at),
+          ),
+        );
       requireThat(
         count.count < s.max_participants,
         "SESSION_FULL",
         "Rendezvous membership limit reached.",
         409,
       );
-      const p = await one<Participant>(
-        tx,
-        "INSERT INTO participants(id,session_id,display_name,metadata_json,credential_hash,last_seen_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",
-        [
-          uuid(),
-          id,
-          body.display_name ?? null,
-          JSON.stringify(info),
-          this.auth.digest(token),
-          this.now(),
-        ],
-      );
-      await tx.query("UPDATE invites SET use_count=use_count+1 WHERE id=$1", [
-        invite.id,
-      ]);
+      const [p] = await tx.orm
+        .insert(participants)
+        .values({
+          id: uuid(),
+          session_id: id,
+          display_name: (body.display_name as string | undefined) ?? null,
+          metadata_json: info,
+          credential_hash: this.auth.digest(token),
+          last_seen_at: this.now(),
+        })
+        .returning();
+      await tx.orm
+        .update(invites)
+        .set({ use_count: sql`${invites.use_count} + 1` })
+        .where(eq(invites.id, invite.id));
       await this.membershipStatus(tx, id);
       await this.event(tx, "participant.joined", id, p.id);
       await this.event(tx, "invite.used", id, p.id);
@@ -337,13 +404,21 @@ export class Service {
         "Rendezvous message limit reached.",
         429,
       );
-      const stored = await this.engine.append(tx, id, { participantId: p?.id, content: body.content as string, now: this.now() });
-      const m = { ...stored, sender_id: p?.id ?? 'owner', content: body.content as string };
+      const stored = await this.engine.append(tx, id, {
+        participantId: p?.id,
+        content: body.content as string,
+        now: this.now(),
+      });
+      const m = {
+        ...stored,
+        sender_id: p?.id ?? "owner",
+        content: body.content as string,
+      };
       if (p)
-        await tx.query("UPDATE participants SET last_seen_at=$2 WHERE id=$1", [
-          p.id,
-          this.now(),
-        ]);
+        await tx.orm
+          .update(participants)
+          .set({ last_seen_at: this.now() })
+          .where(eq(participants.id, p.id));
       return m;
     });
     this.log("message.sent", {
@@ -366,42 +441,107 @@ export class Service {
     integer(wait, 0, 60, "wait");
     // Authenticate before allocating a waiter, then recheck on every wake.
     const initial = await this.reader(this.db, id, token, false, true);
-    const roster = async (db: Queryable) =>
-      (
-        await db.query<MessagePage["participants"][number]>(
-          "SELECT id,display_name,left_at,revoked_at FROM participants WHERE session_id=$1 ORDER BY joined_at,id",
-          [id],
-        )
-      ).rows;
+    const roster = (db: Queryable) =>
+      db.orm
+        .select({
+          id: participants.id,
+          display_name: participants.display_name,
+          left_at: participants.left_at,
+          revoked_at: participants.revoked_at,
+        })
+        .from(participants)
+        .where(eq(participants.session_id, id))
+        .orderBy(participants.joined_at, participants.id);
     const initialRoster = JSON.stringify(await roster(this.db));
     const key = initial.p?.id || `owner:${id}`;
     const started = Date.now();
-    this.log('poll.started', { session_id: id, participant_id: initial.p?.id, after, wait });
+    this.log("poll.started", {
+      session_id: id,
+      participant_id: initial.p?.id,
+      after,
+      wait,
+    });
     try {
-      if (initial.p && this.status(initial.s) !== 'expired') await this.db.query('UPDATE participants SET last_seen_at=$2 WHERE id=$1', [initial.p.id, this.now()]);
-      const page = await this.engine.poll(id, `room:${key}`, wait, () => this.db.transaction(async tx => {
-        const { s } = await this.reader(tx, id, token, true, true), status = this.status(s);
-        if (status === 'expired') return { value: { messages: [], participants: [], cursor: after, session_status: status } as MessagePage, ready: true };
-        requireThat(after < s.next_sequence, 'INVALID_CURSOR', 'Cursor is ahead of the message log. Use the last GET response cursor.');
-        const rows = (await this.engine.read(tx, id, after)).map(m => ({ id: m.id, sequence: m.sequence, sender_id: m.sender_participant_id ?? 'owner', content: m.content, created_at: m.created_at }));
-        const participants = await roster(tx);
-        return { value: { messages: rows, participants, cursor: rows.at(-1)?.sequence ?? after, session_status: status } as MessagePage,
-          ready: rows.length > 0 || JSON.stringify(participants) !== initialRoster || status === 'closed', expiresIn: new Date(s.expires_at).getTime() - this.clock() };
-      }), signal, 'TOO_MANY_POLLS');
-      this.log(page.messages.length ? 'poll.delivered' : 'poll.empty', { session_id: id, participant_id: initial.p?.id, after, cursor: page.cursor, count: page.messages.length, status: page.session_status, duration_ms: Date.now() - started });
+      if (initial.p && this.status(initial.s) !== "expired")
+        await this.db.orm
+          .update(participants)
+          .set({ last_seen_at: this.now() })
+          .where(eq(participants.id, initial.p.id));
+      const page = await this.engine.poll(
+        id,
+        `room:${key}`,
+        wait,
+        () =>
+          this.db.transaction(async (tx) => {
+            const { s } = await this.reader(tx, id, token, true, true),
+              status = this.status(s);
+            if (status === "expired")
+              return {
+                value: {
+                  messages: [],
+                  participants: [],
+                  cursor: after,
+                  session_status: status,
+                } as MessagePage,
+                ready: true,
+              };
+            requireThat(
+              after < s.next_sequence,
+              "INVALID_CURSOR",
+              "Cursor is ahead of the message log. Use the last GET response cursor.",
+            );
+            const rows = (await this.engine.read(tx, id, after)).map((m) => ({
+              id: m.id,
+              sequence: m.sequence,
+              sender_id: m.sender_participant_id ?? "owner",
+              content: m.content,
+              created_at: m.created_at,
+            }));
+            const participants = await roster(tx);
+            return {
+              value: {
+                messages: rows,
+                participants,
+                cursor: rows.at(-1)?.sequence ?? after,
+                session_status: status,
+              } as MessagePage,
+              ready:
+                rows.length > 0 ||
+                JSON.stringify(participants) !== initialRoster ||
+                status === "closed",
+              expiresIn: new Date(s.expires_at).getTime() - this.clock(),
+            };
+          }),
+        signal,
+        "TOO_MANY_POLLS",
+      );
+      this.log(page.messages.length ? "poll.delivered" : "poll.empty", {
+        session_id: id,
+        participant_id: initial.p?.id,
+        after,
+        cursor: page.cursor,
+        count: page.messages.length,
+        status: page.session_status,
+        duration_ms: Date.now() - started,
+      });
       return page;
     } finally {
-      if (signal?.aborted) this.log('poll.disconnected', { session_id: id, participant_id: initial.p?.id, after });
+      if (signal?.aborted)
+        this.log("poll.disconnected", {
+          session_id: id,
+          participant_id: initial.p?.id,
+          after,
+        });
     }
   }
 
   async leave(id: string, token: string) {
     await this.db.transaction(async (tx) => {
       const { p } = await this.participant(tx, id, token, true);
-      await tx.query("UPDATE participants SET left_at=$2 WHERE id=$1", [
-        p.id,
-        this.now(),
-      ]);
+      await tx.orm
+        .update(participants)
+        .set({ left_at: this.now() })
+        .where(eq(participants.id, p.id));
       await this.membershipStatus(tx, id);
       await this.event(tx, "participant.left", id, p.id);
     });
@@ -413,23 +553,29 @@ export class Service {
   async inspect(id: string, token: string) {
     const { s, p } = await this.reader(this.db, id, token, false, true);
     const expired = this.status(s) === "expired";
-    const participants = expired
+    const members = expired
       ? []
       : (
-          await this.db.query<Participant>(
-            "SELECT * FROM participants WHERE session_id=$1 ORDER BY joined_at,id",
-            [id],
-          )
-        ).rows.map(safeParticipant);
-    const invites =
+          await this.db.orm
+            .select()
+            .from(participants)
+            .where(eq(participants.session_id, id))
+            .orderBy(participants.joined_at, participants.id)
+        ).map(safeParticipant);
+    const invitations =
       p || expired
         ? undefined
-        : (
-            await this.db.query<Omit<Invite, "secret_hash">>(
-              "SELECT id,max_uses,use_count,expires_at,revoked_at FROM invites WHERE session_id=$1 ORDER BY created_at",
-              [id],
-            )
-          ).rows;
+        : await this.db.orm
+            .select({
+              id: invites.id,
+              max_uses: invites.max_uses,
+              use_count: invites.use_count,
+              expires_at: invites.expires_at,
+              revoked_at: invites.revoked_at,
+            })
+            .from(invites)
+            .where(eq(invites.session_id, id))
+            .orderBy(invites.created_at);
     return {
       session_id: id,
       status: this.status(s).toUpperCase(),
@@ -437,8 +583,8 @@ export class Service {
       expires_at: s.expires_at,
       max_participants: s.max_participants,
       message_count: s.next_sequence - 1,
-      participants,
-      invites,
+      participants: members,
+      invites: invitations,
     };
   }
 
@@ -458,18 +604,22 @@ export class Service {
     return this.db.transaction(async (tx) => {
       const s = await this.owner(tx, id, token, true);
       this.writable(s);
-      const count = await one<{ count: number }>(
-        tx,
-        "SELECT count(*)::integer AS count FROM invites WHERE session_id=$1",
-        [id],
-      );
+      const [count] = await tx.orm
+        .select({ count: rowCount() })
+        .from(invites)
+        .where(eq(invites.session_id, id));
       requireThat(
         count.count < 100,
         "INVITE_LIMIT",
         "Maximum 100 invites per rendezvous.",
         429,
       );
-      const uses = integer(body.max_uses ?? s.max_participants, 1, s.max_participants, "max_uses");
+      const uses = integer(
+        body.max_uses ?? s.max_participants,
+        1,
+        s.max_participants,
+        "max_uses",
+      );
       const ttl = integer(
         body.ttl_seconds ?? this.config.ttlSeconds,
         1,
@@ -481,10 +631,15 @@ export class Service {
       );
       const inviteId = uuid(),
         raw = secret();
-      await tx.query(
-        "INSERT INTO invites(id,session_id,secret_hash,max_uses,expires_at) VALUES($1,$2,$3,$4,$5)",
-        [inviteId, id, this.auth.digest(raw), uses, expires],
-      );
+      await tx.orm
+        .insert(invites)
+        .values({
+          id: inviteId,
+          session_id: id,
+          secret_hash: this.auth.digest(raw),
+          max_uses: uses,
+          expires_at: expires,
+        });
       await this.event(tx, "invite.created", id);
       return { invite_id: inviteId, invite_token: raw, expires_at: expires };
     });
@@ -502,14 +657,14 @@ export class Service {
       "Resource not found.",
       404,
     );
-    const table = kind === "invite" ? "invites" : "participants";
+    const table = kind === "invite" ? invites : participants;
     await this.db.transaction(async (tx) => {
       await this.owner(tx, id, token, true);
-      const row = await one(
-        tx,
-        `UPDATE ${table} SET revoked_at=$3 WHERE id=$1 AND session_id=$2 RETURNING id`,
-        [target, id, this.now()],
-      );
+      const [row] = await tx.orm
+        .update(table)
+        .set({ revoked_at: this.now() })
+        .where(and(eq(table.id, target), eq(table.session_id, id)))
+        .returning({ id: table.id });
       requireThat(row, "NOT_FOUND", "Resource not found.", 404);
       if (kind === "participant") await this.membershipStatus(tx, id);
       await this.event(
@@ -524,15 +679,33 @@ export class Service {
     return { revoked: true };
   }
   async cleanup() {
-    await this.db.query("DELETE FROM sessions s WHERE expires_at<$1 AND NOT EXISTS (SELECT 1 FROM agent_sessions a WHERE a.id=s.id)", [
-      new Date(this.clock() - this.config.retentionSeconds * 1000),
-    ]);
-    await this.db.query("DELETE FROM security_events WHERE created_at<$1", [
-      new Date(
-        this.clock() -
-          (this.config.retentionSeconds + this.config.maxTtlSeconds) * 1000,
-      ),
-    ]);
+    await this.db.orm
+      .delete(sessions)
+      .where(
+        and(
+          lt(
+            sessions.expires_at,
+            new Date(this.clock() - this.config.retentionSeconds * 1000),
+          ),
+          notExists(
+            this.db.orm
+              .select({ id: agentSessions.id })
+              .from(agentSessions)
+              .where(eq(agentSessions.id, sessions.id)),
+          ),
+        ),
+      );
+    await this.db.orm
+      .delete(securityEvents)
+      .where(
+        lt(
+          securityEvents.created_at,
+          new Date(
+            this.clock() -
+              (this.config.retentionSeconds + this.config.maxTtlSeconds) * 1000,
+          ),
+        ),
+      );
     this.rate.sweep();
   }
 }

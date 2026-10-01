@@ -1,6 +1,6 @@
+import { applyMigrations } from '../src/migrations.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { AgentIdentityService } from '../src/agents/identity.js';
 import { AgentPolicyService } from '../src/agents/policies.js';
 import { DEFAULT_AGENT_LIMITS } from '../src/agents/receivers.js';
@@ -80,7 +80,7 @@ test('directional grants default deny, require both owners, and never bypass sam
     }
     await f.grant(f.a, f.c, false, true); await f.grant(f.c, f.a, true, false); await f.allowed(f.a, f.c);
     await assert.rejects(f.allowed(f.c, f.a), { code: 'ACCESS_DENIED' });
-    await f.db.exec(await readFile(new URL('../migrations/011_agent_peer_policies.sql', import.meta.url), 'utf8'));
+    await applyMigrations(f.db);
     await f.allowed(); // Reapplying migrations does not reset grants.
     await assert.rejects(f.db.transaction(tx => f.policies.requireAllowed(tx, f.a.id, uuid())), { code: 'ACCESS_DENIED', message: 'Agent contact is not permitted.' });
     await f.agents.disable(f.ob.id, f.b.id);
@@ -160,9 +160,11 @@ test('policy changes and session closure roll back together on database failure'
   try {
     await f.grant(f.a, f.b); await f.grant(f.b, f.a); const id = await f.session();
     const failing = new AgentPolicyService({ ...f.db, transaction: fn => f.db.transaction(tx => fn({
+      orm: tx.orm,
       exec: sql => tx.exec(sql), query: async <T>(sql: string, args?: unknown[]) => {
-        if (sql.startsWith('UPDATE sessions SET')) throw new Error('injected failure');
-        return tx.query<T>(sql, args);
+        const result = await tx.query<T>(sql, args);
+        if (sql.startsWith('UPDATE agent_sessions SET')) throw new Error('injected failure');
+        return result;
       },
     })) }, f.now);
     await assert.rejects(failing.delete(f.oa.id, f.a.id, f.b.id), /injected failure/);
